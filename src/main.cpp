@@ -18,7 +18,7 @@ enum class State {
     SELECT_MENU,
     HOLD_ACTION,
     AUTO_MODE,
-    MANUAL_MODE,
+    UE4_APERTURE,
     ERROR_HALT,
     DEBUG_MOUSE,
     DEBUG_LSENSOR
@@ -38,7 +38,13 @@ struct LatencyStats {
     float minLatency = 99999.0;
     float maxLatency = 0.0;
 };
-LatencyStats stats;
+LatencyStats statsAuto;   // Stats for the standard Automatic mode
+LatencyStats statsBtoW;   // Stats for UE4 Black-to-White
+LatencyStats statsWtoB;   // Stats for UE4 White-to-Black
+
+// --- UE4 Mode State ---
+// This tracks whether the next measurement should be Black-to-White or White-to-Black
+bool ue4_isWaitingForWhite = true;
 
 // --- Forward Declarations ---
 void updateDisplay();
@@ -46,19 +52,22 @@ void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk);
 void drawMenuScreen();
 void drawHoldActionScreen();
 void drawOperationScreen();
+void drawAutoModeStats();
+void drawUe4ModeStats();
 void drawMouseDebugScreen();
 void drawLightSensorDebugScreen();
 void enterErrorState(const char* errorMessage);
-void measureLatency();
+unsigned long measureLatency(bool waitForHigh); // Returns latency in micros or 0 on timeout
+void updateStats(LatencyStats& stats, unsigned long latencyMicros); // Helper to calculate stats
 
 // --- Setup Function ---
 void setup() {
     pinMode(PIN_LED_BUILTIN, OUTPUT);
     digitalWrite(PIN_LED_BUILTIN, LOW);
 
+    // Using Teensy-specific digitalWriteFast for maximum speed.
     pinMode(PIN_SEND_CLICK, OUTPUT);
     digitalWriteFast(PIN_SEND_CLICK, LOW); // Ensure click pin is off initially
-    pinMode(PIN_RECEIVE_CLICK, INPUT);
 
     debouncer.attach(PIN_BUTTON, INPUT_PULLUP);
     debouncer.interval(25); // Debounce interval in ms
@@ -76,29 +85,34 @@ void setup() {
     // --- Component Checks ---
     bool monitorOk = true; // If we're here, monitor is working
 
-    // Check light sensor for stability and range
+    // Check light sensor for stability.
     int minLightReading = 1023;
     int maxLightReading = 0;
-    elapsedMillis sensorCheckTimer;
-    while (sensorCheckTimer < SENSOR_CHECK_DURATION_MS) {
+    elapsedMillis componentCheckTimer;
+    while (componentCheckTimer < FLUC_CHECK_DURATION_MS) {
         int currentReading = analogRead(PIN_LIGHT_SENSOR);
         if (currentReading < minLightReading) minLightReading = currentReading;
         if (currentReading > maxLightReading) maxLightReading = currentReading;
         delay(10); // Briefly pause to not overwhelm the ADC
     }
-    bool sensorIsStable = (maxLightReading - minLightReading) < SENSOR_FLUCTUATION_THRESHOLD;
-    bool sensorIsInRange = (maxLightReading < LIGHT_SENSOR_ERROR_MAX);
-    bool sensorOk = sensorIsStable && sensorIsInRange;
+    bool sensorOk = (maxLightReading - minLightReading) < SENSOR_FLUCTUATION_THRESHOLD;
 
-    // Check for mouse presence (simple voltage read)
-    // analogRead returns 0-1023 for 0-3.3V.
-    float voltage = analogRead(PIN_RECEIVE_CLICK) * (3.3 / 1023.0);
-    bool mouseOk = (voltage > MOUSE_PRESENCE_VOLTAGE);
+    // Check for mouse presence by measuring the stability (fluctuation) on the analog pin.
+    int minMouseReading = 1023;
+    int maxMouseReading = 0;
+    componentCheckTimer = 0; // Reset the timer for the next check
+    while (componentCheckTimer < FLUC_CHECK_DURATION_MS) {
+        int currentReading = analogRead(PIN_MOUSE_PRESENCE);
+        if (currentReading < minMouseReading) minMouseReading = currentReading;
+        if (currentReading > maxMouseReading) maxMouseReading = currentReading;
+        delay(10); // Briefly pause to not overwhelm the ADC
+    }
+    bool mouseOk = (maxMouseReading - minMouseReading) < MOUSE_FLUCTUATION_THRESHOLD;
     
     // Display the setup screen once, so user sees the status
     drawSetupScreen(monitorOk, sensorOk, mouseOk);
 
-    // Now handle errors, directing to debug screens
+    // Now handle errors, directing to debug screens if necessary
     if (!sensorOk) {
         currentState = State::DEBUG_LSENSOR;
         digitalWrite(PIN_LED_BUILTIN, HIGH); // Turn on LED to start blink cycle
@@ -153,9 +167,9 @@ void loop() {
     // Always update the debouncer for any state that might use the button
     debouncer.update();
 
-    // Global check to enter the HOLD_ACTION state from operational states
+    // Global check to enter the HOLD_ACTION state from any operational state
     bool canEnterHold = (currentState == State::SELECT_MENU || currentState == State::AUTO_MODE || 
-                         currentState == State::MANUAL_MODE || currentState == State::DEBUG_MOUSE || 
+                         currentState == State::UE4_APERTURE || currentState == State::DEBUG_MOUSE || 
                          currentState == State::DEBUG_LSENSOR);
     if (canEnterHold && debouncer.read() == LOW && debouncer.duration() > BUTTON_HOLD_START_MS) {
         previousState = currentState; // Remember where we came from
@@ -181,12 +195,12 @@ void loop() {
         case State::SELECT_MENU:
             // Act on button release (short press) to cycle menu
             if (debouncer.rose()) { 
-                // A long press is now handled by the HOLD_ACTION state, so this only fires for short presses.
+                // A long press is handled by the HOLD_ACTION state, so this only fires for short presses.
                 menuSelection = (menuSelection + 1) % menuOptionCount;
             }
             break;
         case State::HOLD_ACTION:
-            // Logic is now entirely on release to prevent race conditions and improve UX.
+            // Logic is entirely on release to prevent race conditions and improve UX.
             if (debouncer.rose()) {
                 unsigned long heldDuration = debouncer.previousDuration();
                 // Action 1: RESET (highest priority)
@@ -198,10 +212,13 @@ void loop() {
                 else if (heldDuration > BUTTON_HOLD_DURATION_MS && previousState == State::SELECT_MENU) {
                     if (menuSelection == 0) {
                         currentState = State::AUTO_MODE;
+                        statsAuto = LatencyStats(); // Clear stats for the new session
                     } else {
-                        currentState = State::MANUAL_MODE;
+                        currentState = State::UE4_APERTURE;
+                        ue4_isWaitingForWhite = false; 
+                        statsBtoW = LatencyStats();   // Clear stats for the new session
+                        statsWtoB = LatencyStats();
                     }
-                    stats = LatencyStats(); // Clear stats for the new session
                 }
                 // Action 3: Aborted hold, return to previous state
                 else {
@@ -209,21 +226,53 @@ void loop() {
                 }
             }
             break;
-        case State::AUTO_MODE:
+        case State::AUTO_MODE: {
             // Send click
             digitalWriteFast(PIN_SEND_CLICK, HIGH);
-            delayMicroseconds(100); // Hold the click for a very short duration
+            delayMicroseconds(500); // Hold the click for a reliable duration
             digitalWriteFast(PIN_SEND_CLICK, LOW);
             
-            measureLatency();
+            // Measure the latency. measureLatency() returns 0 on timeout.
+            unsigned long latencyMicros = measureLatency(true); // Measure rising edge
+            
+            // Only update stats if the measurement was successful
+            if (latencyMicros > 0) {
+                updateStats(statsAuto, latencyMicros);
+            }
+
             delay(AUTO_MODE_CLICK_DELAY_MS); // Wait before next run
             break;
-        case State::MANUAL_MODE:
-            // Check for a click from the mouse
-            if (digitalReadFast(PIN_RECEIVE_CLICK) == HIGH) {
-                measureLatency();
+        }
+        case State::UE4_APERTURE: {
+            // Send click - this triggers both white->black and black->white transitions
+            digitalWriteFast(PIN_SEND_CLICK, HIGH);
+            delayMicroseconds(500);
+            digitalWriteFast(PIN_SEND_CLICK, LOW);
+            
+            unsigned long latencyMicros = 0;
+            
+            // Measure the appropriate transition based on the current sub-state
+            if (ue4_isWaitingForWhite) {
+                latencyMicros = measureLatency(true); // Measure black-to-white
+                if (latencyMicros > 0) {
+                    // SUCCESS: Update stats and flip state for the next run
+                    updateStats(statsBtoW, latencyMicros);
+                    ue4_isWaitingForWhite = false; // Now we expect the screen to go black
+                }
+            } else {
+                latencyMicros = measureLatency(false); // Measure white-to-black
+                if (latencyMicros > 0) {
+                    // SUCCESS: Update stats and flip state for the next run
+                    updateStats(statsWtoB, latencyMicros);
+                    ue4_isWaitingForWhite = true; // Now we expect the screen to go white
+                }
             }
+            // If latencyMicros is 0 (timeout), the state is NOT flipped.
+            // This forces the system to re-attempt the same measurement, preventing desync.
+
+            delay(AUTO_MODE_CLICK_DELAY_MS); // Wait before next run
             break;
+        }
         case State::ERROR_HALT:
             return; // Halt program for critical errors
     }
@@ -232,21 +281,38 @@ void loop() {
 }
 
 // --- Core Latency Measurement ---
-void measureLatency() {
+// This function blocks execution and measures the time until the light sensor crosses a threshold.
+// It returns the latency in microseconds on success, or 0 on timeout.
+unsigned long measureLatency(bool waitForHigh) {
     elapsedMicros timer;
     
-    // Wait for the light sensor to cross the threshold
-    // Add a timeout to prevent getting stuck
-    while (analogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
-        if (timer > 5000000) return; // 5 second timeout
+    // The measurement loop is the most performance-critical part of the code.
+    // It uses direct hardware reads and avoids any complex logic or library calls
+    // to ensure the lowest possible overhead.
+
+    if (waitForHigh) {
+        // Wait for the light sensor to cross the HIGH (white) threshold
+        while (analogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
+            if (timer > 5000000) return 0; // 5 second timeout
+        }
+    } else {
+        // Wait for the light sensor to drop below the LOW (black) threshold
+        while (analogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD) {
+            if (timer > 5000000) return 0; // 5 second timeout
+        }
     }
     
-    unsigned long latencyMicros = timer;
+    return timer; // Success
+}
+
+// --- Helper function to centralize statistics calculations ---
+void updateStats(LatencyStats& stats, unsigned long latencyMicros) {
     float latencyMillis = latencyMicros / 1000.0f;
 
-    // Update stats
+    // Update the provided stats struct
     stats.runCount++;
     stats.lastLatency = latencyMillis;
+    // Use a numerically stable rolling average formula
     stats.avgLatency = stats.avgLatency + (latencyMillis - stats.avgLatency) / stats.runCount;
     if (latencyMillis < stats.minLatency) stats.minLatency = latencyMillis;
     if (latencyMillis > stats.maxLatency) stats.maxLatency = latencyMillis;
@@ -269,7 +335,7 @@ void updateDisplay() {
             drawHoldActionScreen();
             break;
         case State::AUTO_MODE:
-        case State::MANUAL_MODE:
+        case State::UE4_APERTURE:
             drawOperationScreen();
             break;
         case State::DEBUG_MOUSE:
@@ -293,20 +359,21 @@ void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk) {
     display.println("SETUP MODE");
     display.drawLine(0, 8, SCREEN_WIDTH-1, 8, SSD1306_WHITE);
 
-    display.setCursor(10, 16);
+    display.setCursor(10, 10);
     display.print("Monitor: ");
     display.println(monitorOk ? "Working" : "Not Detected");
 
-    display.setCursor(10, 26);
+    display.setCursor(10, 20);
     display.print("Sensor: ");
-    display.println(sensorOk ? "Working" : "Error");
+    display.println(sensorOk ? "Stable" : "Unstable");
 
-    display.setCursor(10, 36);
+    display.setCursor(10, 30);
     display.print("Mouse: ");
     display.println(mouseOk ? "Detected" : "Not Detected");
 
     if (monitorOk && sensorOk && mouseOk) {
-        display.setCursor(20, 46);
+        display.drawLine(0, 38, SCREEN_WIDTH-1, 38, SSD1306_WHITE);
+        display.setCursor(20, 42);
         display.println("Hold Button Now");
     }
 
@@ -360,23 +427,19 @@ void drawMouseDebugScreen() {
     display.drawLine(0, 8, SCREEN_WIDTH-1, 8, SSD1306_WHITE);
 
     // Live Data
-    int rawValue = analogRead(PIN_RECEIVE_CLICK);
-    float voltage = rawValue * (3.3 / 1023.0);
-    char buf[10];
-
+    int rawValue = analogRead(PIN_MOUSE_PRESENCE);
+    
     display.setCursor(0, 16);
     display.print("Pin: ");
-    display.print(PIN_RECEIVE_CLICK);
+    display.print(PIN_MOUSE_PRESENCE);
 
     display.setCursor(0, 28);
-    display.print("Raw Reading: ");
+    display.print("Live Reading: ");
     display.print(rawValue);
 
-    dtostrf(voltage, 4, 2, buf);
     display.setCursor(0, 40);
-    display.print("Voltage: ");
-    display.print(buf);
-    display.print("V");
+    display.print("Fails if Fluct > ");
+    display.print(MOUSE_FLUCTUATION_THRESHOLD);
 
     // Footer
     display.setCursor(20, 56);
@@ -403,13 +466,9 @@ void drawLightSensorDebugScreen() {
     display.setCursor(0, 28);
     display.print("Live Reading: ");
     display.print(rawValue);
-
     display.setCursor(0, 40);
-    display.print("IF >");
-    display.print(LIGHT_SENSOR_ERROR_MAX);
-    display.print(" or Fluc >");
+    display.print("Fails if Fluct > ");
     display.print(SENSOR_FLUCTUATION_THRESHOLD);
-
 
     // Footer
     display.setCursor(20, 56);
@@ -429,27 +488,38 @@ void drawMenuScreen() {
             display.print("  ");
         }
         if (i == 0) display.println("Automatic");
-        if (i == 1) display.println("Manual");
+        if (i == 1) display.println("UE4 Aperture");
     }
     
     display.setCursor(20, 56);
     display.println(GITHUB_TAG);
 }
 
+// --- Main Operation Screen Router ---
 void drawOperationScreen() {
+    // Call the correct display function based on the current mode
+    if (currentState == State::AUTO_MODE) {
+        drawAutoModeStats();
+    } else if (currentState == State::UE4_APERTURE) {
+        drawUe4ModeStats();
+    }
+}
+
+// --- Specific Stat Screens ---
+void drawAutoModeStats() {
     char buf[16];
 
     // Mode
     display.setCursor(88, 0);
-    display.print(currentState == State::AUTO_MODE ? "AUTO" : "MANUAL");
+    display.print("AUTO");
 
     // Light Sensor Reading
     display.setCursor(0, 0);
-    display.print("LightSen:");
+    display.print("Light:");
     display.print(analogRead(PIN_LIGHT_SENSOR));
 
     // Last Latency
-    dtostrf(stats.lastLatency, 5, 2, buf);
+    dtostrf(statsAuto.lastLatency, 5, 2, buf);
     display.setCursor(0, 15);
     display.print("Last: ");
     display.print(buf);
@@ -458,10 +528,10 @@ void drawOperationScreen() {
     // Run Count
     display.setCursor(80, 15);
     display.print("N: ");
-    display.print(stats.runCount);
+    display.print(statsAuto.runCount);
 
     // Average Latency
-    dtostrf(stats.avgLatency, 5, 2, buf);
+    dtostrf(statsAuto.avgLatency, 5, 2, buf);
     display.setCursor(0, 30);
     display.print("Avg:  ");
     display.print(buf);
@@ -469,12 +539,12 @@ void drawOperationScreen() {
     
     // Min/Max
     display.setTextSize(1);
-    dtostrf(stats.minLatency, 4, 1, buf);
+    dtostrf(statsAuto.minLatency, 4, 1, buf);
     display.setCursor(0, 45);
     display.print("Min:");
     display.print(buf);
 
-    dtostrf(stats.maxLatency, 4, 1, buf);
+    dtostrf(statsAuto.maxLatency, 4, 1, buf);
     display.setCursor(64, 45);
     display.print("Max:");
     display.print(buf);
@@ -483,6 +553,62 @@ void drawOperationScreen() {
     display.setCursor(20, 56);
     display.println(GITHUB_TAG);
 }
+
+void drawUe4ModeStats() {
+    char buf[10];
+
+    // --- Title ---
+    display.setCursor(15, 0);
+    display.print("UE4 Aperture Grille");
+
+    // --- Column Headers ---
+    display.setCursor(0, 12);
+    display.print("B-to-W");
+    display.setCursor(74, 12);
+    display.print("W-to-B");
+    display.drawLine(64, 10, 64, 52, SSD1306_WHITE); // Vertical divider
+
+    // --- Last Latency ---
+    dtostrf(statsBtoW.lastLatency, 5, 2, buf);
+    display.setCursor(0, 22);
+    display.print("L:"); display.print(buf);
+    
+    dtostrf(statsWtoB.lastLatency, 5, 2, buf);
+    display.setCursor(68, 22);
+    display.print("L:"); display.print(buf);
+    
+    // --- Average Latency ---
+    dtostrf(statsBtoW.avgLatency, 5, 2, buf);
+    display.setCursor(0, 32);
+    display.print("A:"); display.print(buf);
+
+    dtostrf(statsWtoB.avgLatency, 5, 2, buf);
+    display.setCursor(68, 32);
+    display.print("A:"); display.print(buf);
+
+    // --- Min/Max Latency ---
+    dtostrf(statsBtoW.minLatency, 4, 1, buf);
+    display.setCursor(0, 42);
+    display.print("m:"); display.print(buf);
+
+    dtostrf(statsWtoB.minLatency, 4, 1, buf);
+    display.setCursor(68, 42);
+    display.print("m:"); display.print(buf);
+    
+    dtostrf(statsBtoW.maxLatency, 4, 1, buf);
+    display.setCursor(0, 52);
+    display.print("M:"); display.print(buf);
+    
+    dtostrf(statsWtoB.maxLatency, 4, 1, buf);
+    display.setCursor(68, 52);
+    display.print("M:"); display.print(buf);
+    
+    // --- Footer Run Count ---
+    display.setCursor(20, 56);
+    display.print("N: ");
+    display.print(statsBtoW.runCount); // or statsWtoB.runCount, they are the same
+}
+
 
 // --- Error Handling ---
 void enterErrorState(const char* errorMessage) {

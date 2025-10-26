@@ -4,11 +4,19 @@
 // Must use digital pins that support interrupts for the button.
 const int PIN_BUTTON = 4; // Push to make button for menu navigation
 const int PIN_SEND_CLICK = 5; // Pin to send a mouse click signal (output)
-const int PIN_RECEIVE_CLICK = 21; // Pin to receive a mouse click signal from the mouse (input) [ANALOG PIN]
+
+const int PIN_MOUSE_PRESENCE = 21; // Analog pin to detect mouse presence (input) (For me it's optimal switch so 1Volt) - This pin can be used to detect if the mouse is clicked if wired to analog switch instead of optical.
+const int MOUSE_FLUCTUATION_THRESHOLD = 350; // Max allowed change during stability check for mouse presence
+
 const int PIN_LED_BUILTIN = 13; // Built-in LED for error indication
 
 // Analog pin for the light sensor
 const int PIN_LIGHT_SENSOR = 23;
+
+// Light sensor settings
+const int LIGHT_SENSOR_THRESHOLD = 100; // Value above which light is considered "detected"
+const int DARK_SENSOR_THRESHOLD = 50; // Value below which darkness is considered "detected"
+const int SENSOR_FLUCTUATION_THRESHOLD = 150; // Max allowed change during stability check
 
 // I2C pins for the OLED display (Wire)
 // Teensy 4.1 default I2C pins are 18 (SDA) and 19 (SCL)
@@ -17,11 +25,9 @@ const int PIN_LIGHT_SENSOR = 23;
 const unsigned long BUTTON_HOLD_START_MS = 250; // Time in ms to start showing hold action
 const unsigned long BUTTON_HOLD_DURATION_MS = 1500; // Time in ms to hold button for select
 const unsigned long BUTTON_RESET_DURATION_MS = 2500; // Time in ms to hold for a global reset
-const int LIGHT_SENSOR_THRESHOLD = 50; // Value above which light is considered "detected"
-const int LIGHT_SENSOR_ERROR_MAX = 300; // Max value on boot, otherwise sensor error
 const float MOUSE_PRESENCE_VOLTAGE = 0.5f; // Voltage threshold to detect mouse presence
-const unsigned long SENSOR_CHECK_DURATION_MS = 1500; // Duration to check sensor stability
-const int SENSOR_FLUCTUATION_THRESHOLD = 100; // Max allowed change during stability check
+const unsigned long FLUC_CHECK_DURATION_MS = 1500; // Duration to check sensor/mouse stability
+
 
 // --- Display Configuration ---
 const int SCREEN_WIDTH = 128; // OLED display width, in pixels
@@ -31,4 +37,4 @@ const char* GITHUB_TAG = "GitHub: S4N-T0S";
 
 // --- Timing Configuration ---
 // Add a small delay after sending a click in auto mode to prevent accidental re-triggers
-const unsigned long AUTO_MODE_CLICK_DELAY_MS = 250;
+const unsigned long AUTO_MODE_CLICK_DELAY_MS = 150;
