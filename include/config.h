@@ -26,13 +26,15 @@ const int MOUSE_STABILITY_THRESHOLD_ADC = 15;
 // >>>>>>>>>>> PLEASE SET IT TO A VALUE CLOSEST TO YOUR MOUSE POLLING RATE! <<<<<<<<<<
 
 // SAFE AND ROBUST VALUES (I would lower from these guidelines only if you are limit testing):
-// At 8k Hz polling rate, each poll is 125 microseconds, so holding for at least 2 of these polls seems reliable (250 microseconds)
+// For example if I have a very reliable mouse/system, I might set my value to just over the polling rate, e.g., 135 for 8kHz polling rate.
+// At 8k Hz polling rate, each poll is 125 microseconds, so holding for 2 of these polls is very safe (250 microseconds)
 // At 4k Hz polling rate, each poll is 250 microseconds... (500 microseconds)
 // At 2k Hz polling rate, each poll is 500 microseconds... (1000 microseconds)
 // At 1k Hz polling rate, each poll is 1000 microseconds... (2000 microseconds)
 // At 500 Hz polling rate, each poll is 2000 microseconds... (4000 microseconds)
 // At 250 Hz polling rate, each poll is 4000 microseconds... (8000 microseconds)
 const int MOUSE_CLICK_HOLD_MICROS = 250;
+// ^ IMPORTANT: This delay is only for UE4 modes. Automatic mode holds down the click until the box turns white, then lets go.
 
 const int PIN_LED_BUILTIN = 13; // Built-in LED for error indication
 

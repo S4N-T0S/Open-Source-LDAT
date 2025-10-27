@@ -308,10 +308,10 @@ void loop() {
             bool timeoutOccurred = false;
 
             // --- SYNC STEP ---
-            // First, ensure the screen is dark before we trigger a flash. This prevents
-            // desynchronization where we try to measure a B->W transition that already happened.
+            // We wait for the FCAT box to be black, indicating no click is active.
             elapsedMicros syncTimer;
             while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD) {
+                // If the screen stays bright for too long, it might be stuck, or the initial state is wrong.
                 if (syncTimer > 2000000) { // 2 second timeout for sync
                     timeoutOccurred = true;
                     break;
@@ -319,29 +319,32 @@ void loop() {
             }
 
             if (timeoutOccurred) {
+                // If timeout occurred during sync, skip this run and try again.
+                // A delay here prevents hammering the system if it's genuinely stuck bright.
                 delay(AUTO_MODE_RUN_DELAY_MS);
                 break; // Skip this run and try again
             }
 
             // --- MEASUREMENT STEP ---
-            // The latency timer starts THE INSTANT the click signal is sent.
-            // The subsequent delay for holding the click is correctly included in the measurement period.
+            // 1. The latency timer starts THE INSTANT the click signal is sent.
+            //    This simulates the mouse button being pressed down, which causes
+            //    the RTSS FCAT marker to turn white.
             elapsedMicros latencyTimer;
             digitalWriteFast(PIN_SEND_CLICK, HIGH);
 
-            // Hold the click signal for the configured duration.
-            delayMicroseconds(MOUSE_CLICK_HOLD_MICROS);
-
-            // Release the click signal.
-            digitalWriteFast(PIN_SEND_CLICK, LOW);
-
-            // Now, wait for the light sensor to detect the screen turning white.
+            // 2. Now, wait for the light sensor to detect the screen turning white.
+            //    The click signal remains HIGH (mouse button held down) during this period.
             while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
+                // If the screen doesn't turn white within a reasonable time, it's a measurement timeout.
                 if (latencyTimer > 2000000) { // 2 second timeout for measurement
                     timeoutOccurred = true;
                     break;
                 }
             }
+
+            // 3. After detecting white (or timeout), release the click signal.
+            //    This simulates the mouse button release, which should turn the FCAT box black again.
+            digitalWriteFast(PIN_SEND_CLICK, LOW);
 
             // Only update stats if the measurement was successful (no timeout).
             if (!timeoutOccurred) {
