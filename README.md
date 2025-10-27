@@ -118,7 +118,7 @@ The simplest measuring mode, for measuring without a mouse.
 
 To ensure the 8kHz patch is working and your device is performing optimally in Direct Mode, you can use the included polling rate tester.
 
-1.  Open the `polling_tester.cpp.txt` file and copy its entire contents.
+1.  Open the `polling_tester.cpp` file and copy its entire contents.
 2.  Paste the contents into `main.cpp`, completely replacing the existing code.
 3.  Upload the new code to your Teensy.
 4.  The Teensy will now act as a mouse, moving the cursor in a smooth circle.
