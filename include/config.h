@@ -5,8 +5,21 @@
 const int PIN_BUTTON = 4; // Push to make button for menu navigation
 const int PIN_SEND_CLICK = 5; // Pin to send a mouse click signal (output)
 
-const int PIN_MOUSE_PRESENCE = 21; // Analog pin to detect mouse presence (input) (For me it's optimal switch so 1Volt) - This pin can be used to detect if the mouse is clicked if wired to analog switch instead of optical.
-const int MOUSE_FLUCTUATION_THRESHOLD = 200; // Max allowed change during stability check for mouse presence
+const int PIN_MOUSE_PRESENCE = 21; // Analog pin to detect mouse presence (input) (3.3V~)
+
+// --- Mouse Presence Check Configuration (8-bit ADC: 0-255) ---
+// The check now verifies two conditions:
+// 1. The voltage is high enough (at least MOUSE_PRESENCE_MIN_ADC_VALUE).
+// 2. The voltage is stable (fluctuation is less than MOUSE_STABILITY_THRESHOLD_ADC).
+
+// This sets the minimum acceptable ADC value. 3.0V on a 3.3V system with an 8-bit ADC.
+// Calculation: (3.0 / 3.3) * 255 = ~231.
+const int MOUSE_PRESENCE_MIN_ADC_VALUE = 230;
+
+// This sets the maximum allowed fluctuation, equivalent to ~200mV.
+// Calculation: (0.2 / 3.3) * 255 = ~15.
+const int MOUSE_STABILITY_THRESHOLD_ADC = 15;
+
 
 const int PIN_LED_BUILTIN = 13; // Built-in LED for error indication
 
@@ -25,7 +38,6 @@ const int SENSOR_FLUCTUATION_THRESHOLD = 20; // Max allowed change during stabil
 const unsigned long BUTTON_HOLD_START_MS = 250; // Time in ms to start showing hold action
 const unsigned long BUTTON_HOLD_DURATION_MS = 1000; // Time in ms to hold button for select
 const unsigned long BUTTON_RESET_DURATION_MS = 2000; // Time in ms to hold for a global reset
-const float MOUSE_PRESENCE_VOLTAGE = 0.5f; // Voltage threshold to detect mouse presence
 const unsigned long FLUC_CHECK_DURATION_MS = 1500; // Duration to check sensor/mouse stability
 
 

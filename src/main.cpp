@@ -110,18 +110,18 @@ void setup() {
     bool monitorOk = true; // If we're here, monitor is working
 
     // Check light sensor for stability.
-    int minLightReading = 1023;
-    int maxLightReading = 0;
+    int minLightReading = 1023; // Start high to find the true minimum
+    int maxLightReading = 0;    // Start low to find the true maximum
     elapsedMillis componentCheckTimer;
     while (componentCheckTimer < FLUC_CHECK_DURATION_MS) {
         int currentReading = fastAnalogRead(PIN_LIGHT_SENSOR);
         if (currentReading < minLightReading) minLightReading = currentReading;
         if (currentReading > maxLightReading) maxLightReading = currentReading;
-        delay(10); // Briefly pause to not overwhelm the ADC
+        delay(10);
     }
     bool sensorOk = (maxLightReading - minLightReading) < SENSOR_FLUCTUATION_THRESHOLD;
 
-    // Check for mouse presence by measuring the stability (fluctuation) on the analog pin.
+    // Check for mouse presence by measuring the stability (fluctuation/voltage) on the analog pin.
     int minMouseReading = 1023;
     int maxMouseReading = 0;
     componentCheckTimer = 0; // Reset the timer for the next check
@@ -131,7 +131,13 @@ void setup() {
         if (currentReading > maxMouseReading) maxMouseReading = currentReading;
         delay(10); // Briefly pause to not overwhelm the ADC
     }
-    bool mouseOk = (maxMouseReading - minMouseReading) > MOUSE_FLUCTUATION_THRESHOLD;
+    
+    // Condition 1: Is the signal stable (low fluctuation)?
+    bool isStable = (maxMouseReading - minMouseReading) < MOUSE_STABILITY_THRESHOLD_ADC;
+    // Condition 2: Is the voltage level high enough?
+    bool isHighEnough = minMouseReading > MOUSE_PRESENCE_MIN_ADC_VALUE;
+    // The check passes only if BOTH conditions are true.
+    bool mouseOk = isStable && isHighEnough;
     
     // Display the setup screen once, so user sees the status
     drawSetupScreen(monitorOk, sensorOk, mouseOk);
@@ -301,19 +307,17 @@ void loop() {
             break;
         }
         case State::DIRECT_UE4_APERTURE: {
-            // Send click via USB
-            Mouse.click(MOUSE_LEFT);
-
             // --- IMPORTANT NOTES ---
-            // Added a delay here. The Mouse.click() function is asynchronous.
+            // The Mouse.click() function is asynchronous.
             // It just queues the command. The PC polls the Teensy for this data.
-            // This delay gives time for the USB poll to occur and the PC to receive
+            // Adding a delay gives time for the USB poll to occur and the PC to receive
             // the click before we start our measurement timer. 1.25ms is a
             // reasonable guess to cover a 1000Hz polling cycle and some OS jitter.
-            // Without this delay, the timer starts before the click has even left the Teensy,
-            // resulting in near-zero readings.
-            delay(1.25);
+            // Without this delay, the timer starts before the click has even "departed" the Teensy.
+            // -- This note is here for future reference and understanding of the timing intricacies. --
             
+            // Send click via USB
+            Mouse.click(MOUSE_LEFT);
             unsigned long latencyMicros = 0;
             
             // Measurement logic is the same, but updates the 'Direct' stats
@@ -501,7 +505,6 @@ void drawHoldActionScreen() {
     display.fillRect(barX, 36, barWidth * resetProgress, 10, SSD1306_WHITE);
 }
 
-
 void drawMouseDebugScreen() {
     display.clearDisplay();
     display.setTextSize(1);
@@ -516,16 +519,16 @@ void drawMouseDebugScreen() {
     int rawValue = fastAnalogRead(PIN_MOUSE_PRESENCE);
     
     display.setCursor(0, 16);
-    display.print("Pin: ");
-    display.print(PIN_MOUSE_PRESENCE);
-
-    display.setCursor(0, 28);
     display.print("Live Reading: ");
     display.print(rawValue);
 
+    display.setCursor(0, 28);
+    display.print("Min V Lvl: >");
+    display.print(MOUSE_PRESENCE_MIN_ADC_VALUE);
+
     display.setCursor(0, 40);
-    display.print("Fails if Fluct < ");
-    display.print(MOUSE_FLUCTUATION_THRESHOLD);
+    display.print("Max Fluct: <");
+    display.print(MOUSE_STABILITY_THRESHOLD_ADC);
 
     // Footer
     display.setCursor(20, 56);
