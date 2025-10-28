@@ -302,28 +302,53 @@ void loop() {
                         currentState = State::SELECT_RUN_LIMIT;
                     }
                     else if (previousState == State::SELECT_RUN_LIMIT) {
-                        // User selected a run limit.
-                        // Set the run limit and start the previously stored analysis mode.
+                        // User selected a run limit. Set it and prepare to start the mode.
                         if (runLimitMenuSelection == 0) maxRuns = 50;
                         else if (runLimitMenuSelection == 1) maxRuns = 150;
                         else if (runLimitMenuSelection == 2) maxRuns = 300;
                         else maxRuns = 0; // 0 represents unlimited
 
-                        // Reset stats for the selected mode before starting a new test session
-                        if (selectedMode == State::AUTO_MODE) {
-                            statsAuto = LatencyStats();
-                        } else if (selectedMode == State::AUTO_UE4_APERTURE) {
-                            ue4_isWaitingForWhite = true; // Reset sub-state
-                            isFirstUe4Run = true;
-                            statsBtoW = LatencyStats();   // Clear stats
-                            statsWtoB = LatencyStats();
-                        } else if (selectedMode == State::DIRECT_UE4_APERTURE) {
-                             ue4_isWaitingForWhite = true; // Reset sub-state
-                            isFirstUe4Run = true;
-                            statsDirectBtoW = LatencyStats(); // Clear stats
-                            statsDirectWtoB = LatencyStats();
+                        bool shouldStartMode = true; // Assume we will start unless the Direct check fails.
+
+                        // --- Check for Direct modes ---
+                        if (selectedMode == State::DIRECT_UE4_APERTURE) {
+                            if (usb_configuration == 0) {
+                                shouldStartMode = false; // Veto the mode start.
+
+                                // Display error message to the user.
+                                display.clearDisplay();
+                                display.setTextSize(1);
+                                display.setTextColor(SSD1306_WHITE);
+                                centerText("CONNECTION ERROR", 0);
+                                display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
+                                centerText("Direct Mode requires", 20);
+                                centerText("a PC connection.", 32);
+                                centerText("Returning to menu...", 48);
+                                display.display();
+                                delay(3500);
+
+                                menuSelection = 0; // Reset menu for a clean slate
+                                currentState = State::SELECT_MENU; // Go back to the main menu
+                            }
                         }
-                        currentState = selectedMode; // Finally, start the analysis mode
+
+                        if (shouldStartMode) {
+                            // Reset stats for the selected mode before starting a new test session
+                            if (selectedMode == State::AUTO_MODE) {
+                                statsAuto = LatencyStats();
+                            } else if (selectedMode == State::AUTO_UE4_APERTURE) {
+                                ue4_isWaitingForWhite = true; // Reset sub-state
+                                isFirstUe4Run = true;
+                                statsBtoW = LatencyStats();   // Clear stats
+                                statsWtoB = LatencyStats();
+                            } else if (selectedMode == State::DIRECT_UE4_APERTURE) {
+                                 ue4_isWaitingForWhite = true; // Reset sub-state
+                                isFirstUe4Run = true;
+                                statsDirectBtoW = LatencyStats(); // Clear stats
+                                statsDirectWtoB = LatencyStats();
+                            }
+                            currentState = selectedMode; // Finally, start the analysis mode
+                        }
                     }
                      else if (previousState == State::SELECT_DEBUG_MENU) {
                         // User selected an option from the debug menu.
