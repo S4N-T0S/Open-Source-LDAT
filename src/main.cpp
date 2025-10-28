@@ -5,6 +5,7 @@
 #include <Adafruit_SSD1306.h>
 #include <Bounce2.h>
 #include <elapsedMillis.h>
+#include <Entropy.h>
 #include <ADC.h> // Teensy-specific ADC library for high-speed analog reads
 #include "../include/config.h"
 
@@ -74,20 +75,22 @@ void drawUe4StatsScreen(const char* title, const LatencyStats& b_to_w_stats, con
 void drawMouseDebugScreen();
 void drawLightSensorDebugScreen();
 void enterErrorState(const char* errorMessage);
-void updateStats(LatencyStats& stats, unsigned long latencyMicros); // Helper to calculate stats
-int fastAnalogRead(uint8_t pin); // Optimized analog read function
+void updateStats(LatencyStats& stats, unsigned long latencyMicros);
+int fastAnalogRead(uint8_t pin);
 void drawSyncScreen(const char* message, int y = 32);
 bool performSmartSync(bool isDirectMode);
 void centerText(const char* text, int y);
+void delayWithJitter(unsigned long baseDelayMs);
 
 // --- Setup Function ---
 void setup() {
     pinMode(PIN_LED_BUILTIN, OUTPUT);
     digitalWrite(PIN_LED_BUILTIN, LOW);
 
-    // Initialize USB Mouse functionality.
-    // NOTE: The Teensy must be configured as a USB HID device in your project
-    // settings (e.g., in platformio.ini or Arduino Tools menu) for this to work.
+    // Seed the software pseudo-random generator with a true random number.
+    randomSeed(Entropy.random());
+
+    // Initialize USB Mouse functionality. (Only used for direct)
     Mouse.begin();
 
     // Set the click pin to output mode. The pinMode function is sufficient to
@@ -375,21 +378,42 @@ void loop() {
             bool timeoutOccurred = false;
 
             // --- SYNC STEP ---
-            // We wait for the FCAT box to be black, indicating no click is active.
-            elapsedMicros syncTimer;
-            while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD) {
-                // If the screen stays bright for too long, it might be stuck, or the initial state is wrong.
-                if (syncTimer > 2000000) { // 2 second timeout for sync
+            // We now wait until the screen has been continuously dark for 4ms.
+            elapsedMicros overallSyncTimer; // Overall timeout for the entire sync process.
+            elapsedMicros darkStableTimer;  // Timer to measure continuous dark duration.
+            bool isCountingDark = false;    // Flag to know if we've started timing a dark period.
+
+            while (true) { // Loop until we confirm 4ms of darkness or timeout.
+                if (overallSyncTimer > 2000000) {
                     timeoutOccurred = true;
                     break;
                 }
+
+                if (fastAnalogRead(PIN_LIGHT_SENSOR) <= DARK_SENSOR_THRESHOLD) {
+                    // Screen is dark.
+                    if (!isCountingDark) {
+                        // This is the first dark reading in a sequence, start the timer.
+                        isCountingDark = true;
+                        darkStableTimer = 0;
+                    }
+
+                    // Check if we have been dark for long enough.
+                    if (darkStableTimer > 4000) { // 4000 microseconds = 4 milliseconds.
+                        break; // Sync successful.
+                    }
+                } else {
+                    // Screen is not dark, reset the continuous dark timer.
+                    isCountingDark = false;
+                }
+
+                // A very short delay to prevent busy-looping at max CPU speed.
+                delayMicroseconds(50);
             }
 
             if (timeoutOccurred) {
                 // If timeout occurred during sync, skip this run and try again.
-                // A delay here prevents hammering the system if it's genuinely stuck bright.
-                delay(AUTO_MODE_RUN_DELAY_MS);
-                break; // Skip this run and try again
+                delayWithJitter(AUTO_MODE_RUN_DELAY_MS);
+                break; // Skip this run and try again.
             }
 
             // --- MEASUREMENT STEP ---
@@ -419,7 +443,7 @@ void loop() {
                 updateStats(statsAuto, latencyMicros);
             }
 
-            delay(AUTO_MODE_RUN_DELAY_MS); // Wait before next run
+            delayWithJitter(AUTO_MODE_RUN_DELAY_MS);
             break;
         }
         case State::AUTO_UE4_APERTURE: {
@@ -443,7 +467,7 @@ void loop() {
                     digitalWriteFast(PIN_SEND_CLICK, LOW);
                     elapsedMicros warmupTimer;
                     while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delay(UE4_MODE_RUN_DELAY_MS);
+                    delayWithJitter(UE4_MODE_RUN_DELAY_MS);
 
                     // Warm-up 2: W-to-B (don't measure)
                     digitalWriteFast(PIN_SEND_CLICK, HIGH);
@@ -451,7 +475,7 @@ void loop() {
                     digitalWriteFast(PIN_SEND_CLICK, LOW);
                     warmupTimer = 0;
                     while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delay(UE4_MODE_RUN_DELAY_MS);
+                    delayWithJitter(UE4_MODE_RUN_DELAY_MS);
 
                     isFirstUe4Run = false;         // Sync and warm-up complete.
                     ue4_isWaitingForWhite = true;  // We ended on DARK, so we expect WHITE next.
@@ -472,7 +496,7 @@ void loop() {
                     if (syncTimer > 2000000) { timeoutOccurred = true; break; }
                 }
             }
-            if (timeoutOccurred) { delay(UE4_MODE_RUN_DELAY_MS); break; }
+            if (timeoutOccurred) { delayWithJitter(UE4_MODE_RUN_DELAY_MS); break; }
 
             timeoutOccurred = false;
             if (ue4_isWaitingForWhite) {
@@ -500,7 +524,7 @@ void loop() {
                     ue4_isWaitingForWhite = true;
                 }
             }
-            delay(UE4_MODE_RUN_DELAY_MS);
+            delayWithJitter(UE4_MODE_RUN_DELAY_MS);
             break;
         }
         case State::DIRECT_UE4_APERTURE: {
@@ -521,13 +545,13 @@ void loop() {
                     Mouse.click(MOUSE_LEFT);
                     elapsedMicros warmupTimer;
                     while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delay(UE4_MODE_RUN_DELAY_MS);
+                    delayWithJitter(UE4_MODE_RUN_DELAY_MS);
 
                     // Warm-up 2: W-to-B (don't measure)
                     Mouse.click(MOUSE_LEFT);
                     warmupTimer = 0;
                     while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delay(UE4_MODE_RUN_DELAY_MS);
+                    delayWithJitter(UE4_MODE_RUN_DELAY_MS);
 
                     isFirstUe4Run = false;         // Sync and warm-up complete.
                     ue4_isWaitingForWhite = true;  // We ended on DARK, so we expect WHITE next.
@@ -548,7 +572,7 @@ void loop() {
                     if (syncTimer > 2000000) { timeoutOccurred = true; break; }
                 }
             }
-            if (timeoutOccurred) { delay(UE4_MODE_RUN_DELAY_MS); break; }
+            if (timeoutOccurred) { delayWithJitter(UE4_MODE_RUN_DELAY_MS); break; }
 
             timeoutOccurred = false;
             if (ue4_isWaitingForWhite) {
@@ -572,7 +596,7 @@ void loop() {
                     ue4_isWaitingForWhite = true;
                 }
             }
-            delay(UE4_MODE_RUN_DELAY_MS);
+            delayWithJitter(UE4_MODE_RUN_DELAY_MS);
             break;
         }
         case State::RUNS_COMPLETE:
@@ -585,6 +609,21 @@ void loop() {
     }
     // Update the display in every loop cycle for all active states
     updateDisplay();
+}
+
+// Helper function to add random jitter to delays between measurement runs.
+void delayWithJitter(unsigned long baseDelayMs) {
+    // Adding random jitter breaks any potential phase-lock between the Teensy's
+    // loop and the game's render loop, ensuring more statistically accurate
+    // sampling over many runs.
+    // The `random()` function's max value is exclusive, so im adding 1 to make it inclusive.
+    long jitter = random(-MODE_DELAY_JITTER_MS, MODE_DELAY_JITTER_MS + 1);
+
+    // Ensure the final delay is not negative if jitter is large and negative.
+    long finalDelay = baseDelayMs + jitter;
+    if (finalDelay > 0) {
+        delay(finalDelay);
+    }
 }
 
 // Helper function to display a full-screen status message during the sync process.
