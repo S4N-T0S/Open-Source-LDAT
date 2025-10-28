@@ -306,9 +306,9 @@ void loop() {
                     }
                     else if (previousState == State::SELECT_RUN_LIMIT) {
                         // User selected a run limit. Set it and prepare to start the mode.
-                        if (runLimitMenuSelection == 0) maxRuns = 50;
-                        else if (runLimitMenuSelection == 1) maxRuns = 150;
-                        else if (runLimitMenuSelection == 2) maxRuns = 300;
+                        if (runLimitMenuSelection == 0) maxRuns = 100;
+                        else if (runLimitMenuSelection == 1) maxRuns = 300;
+                        else if (runLimitMenuSelection == 2) maxRuns = 500;
                         else maxRuns = 0; // 0 represents unlimited
 
                         bool shouldStartMode = true; // Assume we will start unless the Direct check fails.
@@ -945,7 +945,7 @@ void drawMenuScreen() {
 }
 
 void drawRunLimitMenuScreen() {
-    const char* const runLimitOptions[] = {"50 Runs", "150 Runs", "300 Runs", "Unlimited"};
+    const char* const runLimitOptions[] = {"100 Runs", "300 Runs", "500 Runs", "Unlimited"};
     drawGenericMenu("Select Run Limit", runLimitOptions, runLimitMenuOptionCount, runLimitMenuSelection, false);
 }
 
