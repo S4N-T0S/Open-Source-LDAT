@@ -37,7 +37,7 @@ State selectedMode = State::SETUP;
 int menuSelection = 0;
 const int menuOptionCount = 3;
 int runLimitMenuSelection = 0;
-const int runLimitMenuOptionCount = 3;
+const int runLimitMenuOptionCount = 4;
 int debugMenuSelection = 0;
 const int debugMenuOptionCount = 2;
 unsigned long maxRuns = 0;
@@ -47,7 +47,7 @@ struct LatencyStats {
     unsigned long runCount = 0;
     float lastLatency = 0.0;
     float avgLatency = 0.0;
-    float minLatency = 99999.0;
+    float minLatency = 999.0;
     float maxLatency = 0.0;
 };
 LatencyStats statsAuto;         // Stats for the standard Automatic mode
@@ -271,6 +271,12 @@ void loop() {
             // Logic is entirely on release to prevent race conditions and improve UX.
             if (debouncer.rose()) {
                 unsigned long heldDuration = debouncer.previousDuration();
+                // Define which states allow for a "SELECT" action.
+                bool isSelectActionValid = (previousState == State::SETUP ||
+                                            previousState == State::SELECT_MENU ||
+                                            previousState == State::SELECT_RUN_LIMIT ||
+                                            previousState == State::SELECT_DEBUG_MENU);
+
                 // Action 1: RESET (highest priority)
                 if (heldDuration > BUTTON_RESET_DURATION_MS) {
                     SCB_AIRCR = 0x05FA0004; // Software Reset
@@ -282,8 +288,8 @@ void loop() {
                     debugMenuSelection = 0; // Reset menu choice
                     currentState = State::SELECT_DEBUG_MENU;
                 }
-                // Action 3: SELECT
-                else if (heldDuration > BUTTON_HOLD_DURATION_MS) {
+                // Action 3: SELECT (only if contextually valid)
+                else if (isSelectActionValid && heldDuration > BUTTON_HOLD_DURATION_MS) {
                     // --- CONTEXT-AWARE SELECTION ---
                     if (previousState == State::SELECT_MENU) {
                         // User selected a mode from the main menu.
@@ -298,8 +304,9 @@ void loop() {
                     else if (previousState == State::SELECT_RUN_LIMIT) {
                         // User selected a run limit.
                         // Set the run limit and start the previously stored analysis mode.
-                        if (runLimitMenuSelection == 0) maxRuns = 150;
-                        else if (runLimitMenuSelection == 1) maxRuns = 300;
+                        if (runLimitMenuSelection == 0) maxRuns = 50;
+                        else if (runLimitMenuSelection == 1) maxRuns = 150;
+                        else if (runLimitMenuSelection == 2) maxRuns = 300;
                         else maxRuns = 0; // 0 represents unlimited
 
                         // Reset stats for the selected mode before starting a new test session
@@ -327,7 +334,7 @@ void loop() {
                         }
                     }
                 }
-                // Action 4: Aborted hold, return to previous state
+                // Action 4: Aborted hold or invalid action, return to previous state
                 else {
                     currentState = previousState;
                 }
@@ -762,22 +769,23 @@ void drawHoldActionScreen() {
     // --- SELECT Bar ---
     display.setCursor(0, 18);
     // Only show "SELECT" as an option if it's a valid action from the current state
-    if (previousState == State::SELECT_MENU || previousState == State::SELECT_RUN_LIMIT ||
-        previousState == State::SELECT_DEBUG_MENU || currentState == State::SETUP) {
+    if (previousState == State::SELECT_MENU || previousState == State::SELECT_RUN_LIMIT || previousState == State::SELECT_DEBUG_MENU || currentState == State::SETUP) {
         display.print("SELECT");
+        float selectProgress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_HOLD_DURATION_MS - BUTTON_HOLD_START_MS);
+        selectProgress = constrain(selectProgress, 0.0, 1.0);
+        display.drawRect(barX, 16, barWidth, 10, SSD1306_WHITE);
+        display.fillRect(barX, 16, (int)(barWidth * selectProgress), 10, SSD1306_WHITE);
     }
-    float selectProgress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_HOLD_DURATION_MS - BUTTON_HOLD_START_MS);
-    selectProgress = constrain(selectProgress, 0.0, 1.0);
-    display.drawRect(barX, 16, barWidth, 10, SSD1306_WHITE);
-    display.fillRect(barX, 16, (int)(barWidth * selectProgress), 10, SSD1306_WHITE);
 
     // --- DEBUG Bar ---
     display.setCursor(0, 34);
-    display.print("DEBUG");
-    float debugProgress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_DEBUG_DURATION_MS - BUTTON_HOLD_START_MS);
-    debugProgress = constrain(debugProgress, 0.0, 1.0);
-    display.drawRect(barX, 32, barWidth, 10, SSD1306_WHITE);
-    display.fillRect(barX, 32, (int)(barWidth * debugProgress), 10, SSD1306_WHITE);
+    if (previousState != State::SELECT_DEBUG_MENU) {
+        display.print("DEBUG");
+        float debugProgress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_DEBUG_DURATION_MS - BUTTON_HOLD_START_MS);
+        debugProgress = constrain(debugProgress, 0.0, 1.0);
+        display.drawRect(barX, 32, barWidth, 10, SSD1306_WHITE);
+        display.fillRect(barX, 32, (int)(barWidth * debugProgress), 10, SSD1306_WHITE);
+    }
 
     // --- RESET Bar ---
     display.setCursor(0, 50);
@@ -849,7 +857,7 @@ void drawLightSensorDebugScreen() {
 }
 
 // --- Generic menu drawing function to reduce code duplication ---
-void drawGenericMenu(const char* title, const char* const options[], int optionCount, int selection) {
+void drawGenericMenu(const char* title, const char* const options[], int optionCount, int selection, bool includeFooter = true) {
     centerText(title, 0);
     display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
@@ -864,7 +872,7 @@ void drawGenericMenu(const char* title, const char* const options[], int optionC
     }
 
     // Footer
-    centerText(GITHUB_TAG, 56);
+    if (includeFooter) centerText(GITHUB_TAG, 56);
 }
 
 void drawMenuScreen() {
@@ -873,8 +881,8 @@ void drawMenuScreen() {
 }
 
 void drawRunLimitMenuScreen() {
-    const char* const runLimitOptions[] = {"150 Runs", "300 Runs", "Unlimited"};
-    drawGenericMenu("Select Run Limit", runLimitOptions, runLimitMenuOptionCount, runLimitMenuSelection);
+    const char* const runLimitOptions[] = {"50 Runs", "150 Runs", "300 Runs", "Unlimited"};
+    drawGenericMenu("Select Run Limit", runLimitOptions, runLimitMenuOptionCount, runLimitMenuSelection, false);
 }
 
 void drawDebugMenuScreen() {
@@ -900,11 +908,6 @@ void drawOperationScreen() {
 // --- Specific Stat Screens ---
 void drawAutoModeStats() {
     char buf[16];
-
-    // Light Sensor Reading (Top-Left)
-    display.setCursor(0, 0);
-    display.print("Light:");
-    display.print(fastAnalogRead(PIN_LIGHT_SENSOR));
 
     // Mode Title (Top-Right)
     display.setCursor(88, 0); // Adjusted for "AUTO" width

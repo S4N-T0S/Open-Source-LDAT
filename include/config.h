@@ -63,5 +63,5 @@ const char* GITHUB_TAG = "GitHub: S4N-T0S";
 
 // --- Timing Configuration ---
 // Add a delay between runs to allow system to stabilize and, allow the monitor to dim back.
-const unsigned long AUTO_MODE_RUN_DELAY_MS = 2000;
-const unsigned long UE4_MODE_RUN_DELAY_MS = 2000;
+const unsigned long AUTO_MODE_RUN_DELAY_MS = 1500;
+const unsigned long UE4_MODE_RUN_DELAY_MS = 250;
