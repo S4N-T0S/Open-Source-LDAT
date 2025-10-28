@@ -19,6 +19,7 @@ enum class State {
     SETUP,
     SELECT_MENU,
     SELECT_RUN_LIMIT,
+    SELECT_DEBUG_MENU,
     HOLD_ACTION,
     AUTO_MODE,
     AUTO_UE4_APERTURE,
@@ -37,6 +38,8 @@ int menuSelection = 0;
 const int menuOptionCount = 3;
 int runLimitMenuSelection = 0;
 const int runLimitMenuOptionCount = 3;
+int debugMenuSelection = 0;
+const int debugMenuOptionCount = 2;
 unsigned long maxRuns = 0;
 
 // --- Statistics ---
@@ -63,6 +66,7 @@ void updateDisplay();
 void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk);
 void drawMenuScreen();
 void drawRunLimitMenuScreen();
+void drawDebugMenuScreen();
 void drawHoldActionScreen();
 void drawOperationScreen();
 void drawAutoModeStats();
@@ -106,15 +110,18 @@ void setup() {
     display.display();
 
     // --- ADC Optimization ---
-    // Configure the ADC for high-speed operation. This is crucial for reducing
-    // the overhead of analog reads within the latency measurement loop.
-    // Lower resolution is faster. 8 bits (0-255) is more than enough for a threshold check.
-    adc->adc1->setResolution(8);
-    // Set conversion speed to the fastest possible setting.
-    adc->adc1->setConversionSpeed(ADC_CONVERSION_SPEED::VERY_HIGH_SPEED);
-    // Set sampling speed to the fastest possible setting.
-    adc->adc1->setSamplingSpeed(ADC_SAMPLING_SPEED::VERY_HIGH_SPEED);
+    // The following settings are applied to BOTH ADC controllers (ADC1 and ADC2)
+    // automatically by the library, ensuring consistent high-speed, 8-bit operation.
 
+    // Configure ADC1
+    adc->adc0->setResolution(8);
+    adc->adc0->setConversionSpeed(ADC_CONVERSION_SPEED::VERY_HIGH_SPEED);
+    adc->adc0->setSamplingSpeed(ADC_SAMPLING_SPEED::VERY_HIGH_SPEED);
+
+    // Configure ADC2
+    adc->adc1->setResolution(8);
+    adc->adc1->setConversionSpeed(ADC_CONVERSION_SPEED::VERY_HIGH_SPEED);
+    adc->adc1->setSamplingSpeed(ADC_SAMPLING_SPEED::VERY_HIGH_SPEED);
 
     // --- Component Checks ---
     bool monitorOk = true; // If we're here, monitor is working
@@ -188,7 +195,14 @@ void setup() {
                     while(true); // Will not be reached, but good practice
                 }
 
-                // Priority 2: Check if it was held long enough to SELECT.
+                // Priority 2: Check for DEBUG menu
+                else if (heldDuration > BUTTON_DEBUG_DURATION_MS) {
+                    debugMenuSelection = 0;
+                    currentState = State::SELECT_DEBUG_MENU;
+                    break;
+                }
+
+                // Priority 3: Check if it was held long enough to SELECT.
                 else if (heldDuration > BUTTON_HOLD_DURATION_MS) {
                     currentState = State::SELECT_MENU;
                     break; // Exit the setup loop and proceed to the main program loop.
@@ -209,9 +223,10 @@ void loop() {
 
     // Global check to enter the HOLD_ACTION state from any operational state
     bool canEnterHold = (currentState == State::SELECT_MENU || currentState == State::SELECT_RUN_LIMIT ||
-                         currentState == State::AUTO_MODE || currentState == State::AUTO_UE4_APERTURE ||
-                         currentState == State::DIRECT_UE4_APERTURE || currentState == State::DEBUG_MOUSE ||
-                         currentState == State::DEBUG_LSENSOR || currentState == State::RUNS_COMPLETE);
+                         currentState == State::SELECT_DEBUG_MENU || currentState == State::AUTO_MODE ||
+                         currentState == State::AUTO_UE4_APERTURE || currentState == State::DIRECT_UE4_APERTURE ||
+                         currentState == State::DEBUG_MOUSE || currentState == State::DEBUG_LSENSOR ||
+                         currentState == State::RUNS_COMPLETE);
     if (canEnterHold && debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
         previousState = currentState; // Remember where we came from
         currentState = State::HOLD_ACTION;
@@ -246,6 +261,12 @@ void loop() {
                 runLimitMenuSelection = (runLimitMenuSelection + 1) % runLimitMenuOptionCount;
             }
             break;
+        case State::SELECT_DEBUG_MENU:
+            // Act on button release (short press) to cycle debug options
+            if (debouncer.rose()) {
+                debugMenuSelection = (debugMenuSelection + 1) % debugMenuOptionCount;
+            }
+            break;
         case State::HOLD_ACTION:
             // Logic is entirely on release to prevent race conditions and improve UX.
             if (debouncer.rose()) {
@@ -255,7 +276,13 @@ void loop() {
                     SCB_AIRCR = 0x05FA0004; // Software Reset
                     while(true);
                 }
-                // Action 2: SELECT
+                // Action 2: DEBUG MENU
+                else if (heldDuration > BUTTON_DEBUG_DURATION_MS) {
+                    // This action is global and always transitions to the debug menu selector.
+                    debugMenuSelection = 0; // Reset menu choice
+                    currentState = State::SELECT_DEBUG_MENU;
+                }
+                // Action 3: SELECT
                 else if (heldDuration > BUTTON_HOLD_DURATION_MS) {
                     // --- CONTEXT-AWARE SELECTION ---
                     if (previousState == State::SELECT_MENU) {
@@ -291,8 +318,16 @@ void loop() {
                         }
                         currentState = selectedMode; // Finally, start the analysis mode
                     }
+                     else if (previousState == State::SELECT_DEBUG_MENU) {
+                        // User selected an option from the debug menu.
+                        if (debugMenuSelection == 0) {
+                            currentState = State::DEBUG_MOUSE;
+                        } else {
+                            currentState = State::DEBUG_LSENSOR;
+                        }
+                    }
                 }
-                // Action 3: Aborted hold, return to previous state
+                // Action 4: Aborted hold, return to previous state
                 else {
                     currentState = previousState;
                 }
@@ -376,7 +411,7 @@ void loop() {
                     digitalWriteFast(PIN_SEND_CLICK, LOW);
                     elapsedMicros warmupTimer;
                     while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delay(AUTO_MODE_RUN_DELAY_MS);
+                    delay(UE4_MODE_RUN_DELAY_MS);
 
                     // Warm-up 2: W-to-B (don't measure)
                     digitalWriteFast(PIN_SEND_CLICK, HIGH);
@@ -384,7 +419,7 @@ void loop() {
                     digitalWriteFast(PIN_SEND_CLICK, LOW);
                     warmupTimer = 0;
                     while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delay(AUTO_MODE_RUN_DELAY_MS);
+                    delay(UE4_MODE_RUN_DELAY_MS);
 
                     isFirstUe4Run = false;         // Sync and warm-up complete.
                     ue4_isWaitingForWhite = true;  // We ended on DARK, so we expect WHITE next.
@@ -405,7 +440,7 @@ void loop() {
                     if (syncTimer > 2000000) { timeoutOccurred = true; break; }
                 }
             }
-            if (timeoutOccurred) { delay(AUTO_MODE_RUN_DELAY_MS); break; }
+            if (timeoutOccurred) { delay(UE4_MODE_RUN_DELAY_MS); break; }
 
             timeoutOccurred = false;
             if (ue4_isWaitingForWhite) {
@@ -433,7 +468,7 @@ void loop() {
                     ue4_isWaitingForWhite = true;
                 }
             }
-            delay(AUTO_MODE_RUN_DELAY_MS);
+            delay(UE4_MODE_RUN_DELAY_MS);
             break;
         }
         case State::DIRECT_UE4_APERTURE: {
@@ -454,13 +489,13 @@ void loop() {
                     Mouse.click(MOUSE_LEFT);
                     elapsedMicros warmupTimer;
                     while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delay(AUTO_MODE_RUN_DELAY_MS);
+                    delay(UE4_MODE_RUN_DELAY_MS);
 
                     // Warm-up 2: W-to-B (don't measure)
                     Mouse.click(MOUSE_LEFT);
                     warmupTimer = 0;
                     while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delay(AUTO_MODE_RUN_DELAY_MS);
+                    delay(UE4_MODE_RUN_DELAY_MS);
 
                     isFirstUe4Run = false;         // Sync and warm-up complete.
                     ue4_isWaitingForWhite = true;  // We ended on DARK, so we expect WHITE next.
@@ -481,7 +516,7 @@ void loop() {
                     if (syncTimer > 2000000) { timeoutOccurred = true; break; }
                 }
             }
-            if (timeoutOccurred) { delay(AUTO_MODE_RUN_DELAY_MS); break; }
+            if (timeoutOccurred) { delay(UE4_MODE_RUN_DELAY_MS); break; }
 
             timeoutOccurred = false;
             if (ue4_isWaitingForWhite) {
@@ -505,7 +540,7 @@ void loop() {
                     ue4_isWaitingForWhite = true;
                 }
             }
-            delay(AUTO_MODE_RUN_DELAY_MS);
+            delay(UE4_MODE_RUN_DELAY_MS);
             break;
         }
         case State::RUNS_COMPLETE:
@@ -655,6 +690,9 @@ void updateDisplay() {
         case State::SELECT_RUN_LIMIT:
             drawRunLimitMenuScreen();
             break;
+        case State::SELECT_DEBUG_MENU:
+            drawDebugMenuScreen();
+            break;
         case State::HOLD_ACTION:
             drawHoldActionScreen();
             break;
@@ -724,7 +762,8 @@ void drawHoldActionScreen() {
     // --- SELECT Bar ---
     display.setCursor(0, 18);
     // Only show "SELECT" as an option if it's a valid action from the current state
-    if (previousState == State::SELECT_MENU || previousState == State::SELECT_RUN_LIMIT || currentState == State::SETUP) {
+    if (previousState == State::SELECT_MENU || previousState == State::SELECT_RUN_LIMIT ||
+        previousState == State::SELECT_DEBUG_MENU || currentState == State::SETUP) {
         display.print("SELECT");
     }
     float selectProgress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_HOLD_DURATION_MS - BUTTON_HOLD_START_MS);
@@ -732,16 +771,21 @@ void drawHoldActionScreen() {
     display.drawRect(barX, 16, barWidth, 10, SSD1306_WHITE);
     display.fillRect(barX, 16, (int)(barWidth * selectProgress), 10, SSD1306_WHITE);
 
+    // --- DEBUG Bar ---
+    display.setCursor(0, 34);
+    display.print("DEBUG");
+    float debugProgress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_DEBUG_DURATION_MS - BUTTON_HOLD_START_MS);
+    debugProgress = constrain(debugProgress, 0.0, 1.0);
+    display.drawRect(barX, 32, barWidth, 10, SSD1306_WHITE);
+    display.fillRect(barX, 32, (int)(barWidth * debugProgress), 10, SSD1306_WHITE);
+
     // --- RESET Bar ---
-    display.setCursor(0, 38);
+    display.setCursor(0, 50);
     display.print("RESET");
     float resetProgress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_RESET_DURATION_MS - BUTTON_HOLD_START_MS);
     resetProgress = constrain(resetProgress, 0.0, 1.0);
-    display.drawRect(barX, 36, barWidth, 10, SSD1306_WHITE);
-    display.fillRect(barX, 36, (int)(barWidth * resetProgress), 10, SSD1306_WHITE);
-
-    // Footer
-    centerText(GITHUB_TAG, 56);
+    display.drawRect(barX, 48, barWidth, 10, SSD1306_WHITE);
+    display.fillRect(barX, 48, (int)(barWidth * resetProgress), 10, SSD1306_WHITE);
 }
 
 void drawMouseDebugScreen() {
@@ -750,17 +794,24 @@ void drawMouseDebugScreen() {
     display.setTextColor(SSD1306_WHITE);
 
     centerText("MOUSE DEBUG", 0);
-    display.drawLine(0, 8, SCREEN_WIDTH-1, 8, SSD1306_WHITE);
+    display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
     // Live Data
     int rawValue = fastAnalogRead(PIN_MOUSE_PRESENCE);
+    float voltage = (rawValue / 255.0f) * 3.3f; // Convert 8-bit ADC to voltage
+    char voltageStr[8];
+    dtostrf(voltage, 4, 2, voltageStr); // Format voltage to "X.XX"
 
     display.setCursor(0, 16);
-    display.print("Live Reading: ");
+    display.print("Raw: ");
     display.print(rawValue);
 
+    display.setCursor(68, 16); // Move to the right
+    display.print(voltageStr);
+    display.print("V");
+
     display.setCursor(0, 28);
-    display.print("Min V Lvl: >");
+    display.print("Min ADC Lvl: >");
     display.print(MOUSE_PRESENCE_MIN_ADC_VALUE);
 
     display.setCursor(0, 40);
@@ -790,53 +841,45 @@ void drawLightSensorDebugScreen() {
     display.print("Live Reading: ");
     display.print(rawValue);
     display.setCursor(0, 40);
-    display.print("Fails if Fluct > ");
+    display.print("Fails if Fluct >");
     display.print(SENSOR_FLUCTUATION_THRESHOLD);
 
     // Footer
     centerText(GITHUB_TAG, 56);
 }
 
-void drawMenuScreen() {
-    centerText("Select Mode", 0);
-    display.drawLine(0, 8, SCREEN_WIDTH-1, 8, SSD1306_WHITE);
+// --- Generic menu drawing function to reduce code duplication ---
+void drawGenericMenu(const char* title, const char* const options[], int optionCount, int selection) {
+    centerText(title, 0);
+    display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
-    for (int i = 0; i < menuOptionCount; ++i) {
+    for (int i = 0; i < optionCount; ++i) {
         display.setCursor(10, 16 + i * 12);
-        if (i == menuSelection) {
+        if (i == selection) {
             display.print("> ");
         } else {
             display.print("  ");
         }
-        if (i == 0) display.println("Automatic");
-        if (i == 1) display.println("Auto UE4");
-        if (i == 2) display.println("Direct UE4");
+        display.println(options[i]);
     }
 
     // Footer
     centerText(GITHUB_TAG, 56);
 }
 
-// Display function for the run limit selection menu
+void drawMenuScreen() {
+    const char* const menuOptions[] = {"Automatic", "Auto UE4", "Direct UE4"};
+    drawGenericMenu("Select Mode", menuOptions, menuOptionCount, menuSelection);
+}
+
 void drawRunLimitMenuScreen() {
-    centerText("Select Run Limit", 0);
-    display.drawLine(0, 8, SCREEN_WIDTH-1, 8, SSD1306_WHITE);
+    const char* const runLimitOptions[] = {"150 Runs", "300 Runs", "Unlimited"};
+    drawGenericMenu("Select Run Limit", runLimitOptions, runLimitMenuOptionCount, runLimitMenuSelection);
+}
 
-    for (int i = 0; i < runLimitMenuOptionCount; ++i) {
-        display.setCursor(10, 16 + i * 12);
-        if (i == runLimitMenuSelection) {
-            display.print("> ");
-        } else {
-            display.print("  ");
-        }
-
-        if (i == 0) display.println("150 Runs");
-        if (i == 1) display.println("300 Runs");
-        if (i == 2) display.println("Unlimited");
-    }
-
-    // Footer
-    centerText(GITHUB_TAG, 56);
+void drawDebugMenuScreen() {
+    const char* const debugOptions[] = {"Mouse Debug", "LSensor Debug"};
+    drawGenericMenu("Debug Menu", debugOptions, debugMenuOptionCount, debugMenuSelection);
 }
 
 // --- Main Operation Screen Router ---

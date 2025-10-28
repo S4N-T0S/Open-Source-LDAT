@@ -33,7 +33,7 @@ const int MOUSE_STABILITY_THRESHOLD_ADC = 15;
 // At 1k Hz polling rate, each poll is 1000 microseconds... (2000 microseconds)
 // At 500 Hz polling rate, each poll is 2000 microseconds... (4000 microseconds)
 // At 250 Hz polling rate, each poll is 4000 microseconds... (8000 microseconds)
-const int MOUSE_CLICK_HOLD_MICROS = 250;
+const int MOUSE_CLICK_HOLD_MICROS = 140;
 // ^ IMPORTANT: This delay is only for UE4 modes. Automatic mode holds down the click until the box turns white, then lets go.
 
 const int PIN_LED_BUILTIN = 13; // Built-in LED for error indication
@@ -41,27 +41,27 @@ const int PIN_LED_BUILTIN = 13; // Built-in LED for error indication
 // Analog pin for the light sensor
 const int PIN_LIGHT_SENSOR = 23;
 
-// Light sensor settings
-const int LIGHT_SENSOR_THRESHOLD = 100; // Value above which light is considered "detected"
-const int DARK_SENSOR_THRESHOLD = 90; // Value below which darkness is considered "detected"
+// Light sensor thresholds (I tested this on an OLED, so my dark would get to essentially between 0-3 and my light around 150+)
+const int LIGHT_SENSOR_THRESHOLD = 20; // Value above which light is considered "detected"
+const int DARK_SENSOR_THRESHOLD = 10; // Value below which darkness is considered "detected"
 const int SENSOR_FLUCTUATION_THRESHOLD = 35; // Max allowed change during stability check
 
-// I2C pins for the OLED display (Wire)
-// Teensy 4.1 default I2C pins are 18 (SDA) and 19 (SCL)
-
-// --- Behavior and Thresholds ---
+// --- Behavior Settings ---
 const unsigned long BUTTON_HOLD_START_MS = 250; // Time in ms to start showing hold action
-const unsigned long BUTTON_HOLD_DURATION_MS = 750; // Time in ms to hold button for select
-const unsigned long BUTTON_RESET_DURATION_MS = 1500; // Time in ms to hold for a global reset
+const unsigned long BUTTON_HOLD_DURATION_MS = 750; // Time in ms to hold button for SELECT
+const unsigned long BUTTON_DEBUG_DURATION_MS = 1250; // Time in ms to hold button for DEBUG
+const unsigned long BUTTON_RESET_DURATION_MS = 1750; // Time in ms to hold for a global RESET
 const unsigned long FLUC_CHECK_DURATION_MS = 1500; // Duration to check sensor/mouse stability
 
 
-// --- Display Configuration ---
+// --- Display Configuration --- I2C pins for the OLED display (Wire) = Teensy 4.1 default I2C pins are 18 (SDA) and 19 (SCL)
 const int SCREEN_WIDTH = 128; // OLED display width, in pixels
 const int SCREEN_HEIGHT = 64; // OLED display height, in pixels
+const byte SCREEN_ADDRESS = 0x3C; // I2C address for the OLED display, could be 0x3C or 0x3D depending on the module
 const int OLED_RESET = -1; // Reset pin # (or -1 if sharing Arduino reset pin)
 const char* GITHUB_TAG = "GitHub: S4N-T0S";
 
 // --- Timing Configuration ---
-// Add a small delay between runs in auto mode
-const unsigned long AUTO_MODE_RUN_DELAY_MS = 125;
+// Add a delay between runs to allow system to stabilize and, allow the monitor to dim back.
+const unsigned long AUTO_MODE_RUN_DELAY_MS = 2000;
+const unsigned long UE4_MODE_RUN_DELAY_MS = 2000;
