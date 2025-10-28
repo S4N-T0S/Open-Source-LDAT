@@ -42,7 +42,7 @@ const int PIN_LED_BUILTIN = 13; // Built-in LED for error indication
 const int PIN_LIGHT_SENSOR = 23;
 
 // Light sensor thresholds (I tested this on an OLED, so my dark would get to essentially between 0-3 and my light around 150+)
-const int LIGHT_SENSOR_THRESHOLD = 20; // Value above which light is considered "detected"
+const int LIGHT_SENSOR_THRESHOLD = 15; // Value above which light is considered "detected"
 const int DARK_SENSOR_THRESHOLD = 10; // Value below which darkness is considered "detected"
 const int SENSOR_FLUCTUATION_THRESHOLD = 35; // Max allowed change during stability check
 
