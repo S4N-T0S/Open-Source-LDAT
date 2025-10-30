@@ -72,7 +72,7 @@ To measure latency in games, you need an on-screen visual indicator that respond
 
 The best method is to use the **NVIDIA Reflex Latency Flash Indicator**, which is supported by many competitive games. This feature must be enabled within the game's graphics settings.
 
-For games that don't offer a menu option, a `.bat` script that can force the setting on or off is included in the `/scripts` folder of this project, thanks to GitHub user **@FR33THY**.
+For games that don't offer a menu option, a `.bat` script that can force the setting on or off is included in the `/scripts` folder of this project, thanks to GitHub user [@fr33thyfr33thy](https://github.com/fr33thyfr33thy).
 
 ### For AMD & All Other Users
 
