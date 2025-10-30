@@ -1,7 +1,7 @@
 # Open-Source-LDAT Teensy 4.1 (Latency Analyser)
-
-![Latency Analyzer in Action](https://github.com/S4N-T0S/Open-Source-LDAT/blob/main/readme_media/Open-Source-LDAT_S4N-T0S_Showcase.gif)
-
+<p align="center">
+  <img src="https://github.com/S4N-T0S/Open-Source-LDAT/blob/main/readme_media/Open-Source-LDAT_S4N-T0S_Showcase.gif">
+</p>
 This project provides the firmware for a powerful, DIY "click-to-photon" system latency tester, similar in function to commercial devices like NVIDIA's LDAT. Built on the high-performance Teensy 4.1, this tool precisely measures the total time from a mouse click until a corresponding visual change appears on your screen.
 
 Designed for accuracy, it uses Teensy-specific optimizations for high-speed I/O. The device features an OLED display for real-time statistics and is controlled by a simple, intuitive single button.
