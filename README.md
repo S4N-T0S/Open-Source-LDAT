@@ -140,8 +140,32 @@ To confirm the 8kHz patch is working correctly for Direct Mode:
 ---
 ## A Note on Measurement Accuracy
 
-Understanding the nuances of latency testing is key to interpreting your results.
+Understanding what causes latency and its variability is key to interpreting your results. A game's render time (e.g., 1ms at 1000 FPS) is just one piece of a much larger puzzle. The final number you see is the sum of delays from a long chain of events—the **"click-to-photon" pipeline**—and this device is designed to measure that entire chain.
 
-The main challenge in measuring click-to-photon latency is that a game's engine only polls for new inputs once per frame. This creates an inherent margin of error. For example, if your click occurs right after the game has checked for input, your action won't be processed until the *next* frame. This means your measured latency can vary by up to one full frametime (e.g., 16.7ms at 60 FPS). You might get a "perfect" click that is processed immediately, or an "unlucky" one that has to wait for the next cycle.
+### The Latency Pipeline
 
-Tools like the **RTSS Latency Marker** are also affected by this, with an additional caveat: the marker is an overlay injected by an external program. It's possible for RTSS to draw its white box on a frame where the game has *received* the input but hasn't yet rendered its effect. This can lead to slightly lower latency readings compared to in-engine tools like NVIDIA's Reflex Flash, which are more tightly integrated with the render pipeline. For this reason, RTSS is also not suitable for measuring latency with Frame Generation technologies, as the marker may be displayed on an interpolated "fake" frame.
+Every time you click, a race against several independent clocks begins. The total delay is the sum of the time spent in each stage:
+
+1.  **Mouse & USB Polling:** The click is processed by the mouse's internal hardware and must then wait to be picked up by the PC. With the **8000Hz** polling rate patch, the PC checks for an update every 0.125ms. This can add anywhere from **0ms to 0.125ms** of random delay, depending on when your click occurs within that tiny polling cycle.
+
+2.  **OS & Game Engine:** The operating system processes the input, and the game engine samples it. The engine typically only checks for input once per frame. This means your input has to wait for the next frame to begin processing, adding a variable delay of **0ms up to one full frametime**. For a game running at 240 FPS, this adds 0ms to 4.167ms of latency.
+
+3.  **Display Refresh (Scanout):** This is the final step where the monitor displays the rendered frame. A 240Hz monitor begins drawing a new image from top-to-bottom every **4.167ms**. If the new frame is rendered just *after* a scanout begins, it must wait in the GPU's buffer for the entire 4.167ms for the next cycle. This adds **0ms to 4.167ms** of random delay.
+
+### Why Min and Max Latency Are So Different
+
+The huge variance between minimum and maximum readings is not an error; it's the expected result of the random alignment of these independent cycles.
+
+Let's use a realistic gaming scenario: 240 FPS on a 240Hz monitor, with an 8kHz mouse.
+
+*   **A "perfectly lucky" click (Minimum Latency):** Your click occurs right before the USB poll, which happens right before the game's input sample, and the frame is rendered just in time for the next monitor refresh. All the variable delays are near zero.
+    *   *Example:* `~1.5ms (mouse hardware) + 0.1ms (USB) + 0.5ms (Game) + 0.5ms (Scanout)` = **~2.6ms** (a very low, but plausible reading).
+
+*   **An "unlucky" click (Maximum Latency):** Your click happens *just after* each of these checks, forcing it to wait for the next full cycle at every single step.
+    *   *Example:* `~1.5ms (hardware) + 0.125ms (missed 8kHz poll) + 4.167ms (missed game sample) + 4.167ms (missed scanout)` = **~10.0ms**
+
+This demonstrates how, even in a perfectly stable setup, real-world system latency can and will vary significantly. This device accurately captures that entire range, giving you the true picture of your system's performance.
+
+### Notes on Software Markers (RTSS)
+
+Tools like the **RTSS Latency Marker** are also affected by this pipeline. However, there's an additional caveat: the marker is an overlay injected by an external program. It's possible for RTSS to draw its white box on a frame where the game has *received* the input but hasn't yet rendered its effect. This can lead to slightly lower latency readings compared to in-engine tools like NVIDIA's Reflex Flash, which are more tightly integrated with the render pipeline. For this reason, RTSS is also not suitable for measuring latency with Frame Generation technologies, as the marker may be displayed on an interpolated "fake" frame.
