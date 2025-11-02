@@ -103,7 +103,7 @@ Your best option is to use the **RTSS FCAT Latency Marker**.
 The device is controlled with a single button using different press durations:
 
 *   **Short Press (Click):** Cycles through menu options.
-*   **Long Press (Select):** Hold for ~0.8 seconds. A "SELECT" progress bar will fill. Releasing selects the highlighted option.
+*   **Long Press (Select/Exit/Bypass):** Hold for ~0.8 seconds. A progress bar will fill. Releasing executes the highlighted option.
 *   **Debug Press (Debug Menu):** Hold for ~1.3 seconds. A "DEBUG" bar will fill, taking you to the hardware diagnostic tools.
 *   **Reset Press (Reset):** Hold for ~1.8 seconds. A "RESET" bar will fill. Releasing will perform a software reset of the device.
 

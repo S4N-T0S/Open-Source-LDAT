@@ -69,6 +69,7 @@ LatencyStats statsDirectWtoB;   // Stats for Direct UE4 White-to-Black
 // This tracks whether the next measurement should be Black-to-White or White-to-Black
 bool ue4_isWaitingForWhite = true;
 bool isFirstUe4Run = true;
+bool mouseIsOk = false;
 
 // --- Polling Test Variables ---
 const int CIRCLE_RADIUS = 100;
@@ -98,6 +99,29 @@ void drawSyncScreen(const char* message, int y = 32);
 SyncResult performSmartSync(bool isDirectMode);
 void centerText(const char* text, int y = -1);
 bool delayWithJitterAndAbortCheck(unsigned long baseDelayMs);
+bool performMouseCheck();
+void displayErrorScreen(const char* title, const char* line1, const char* line2, const char* line3, unsigned long delayMs = 3500);
+
+// --- Component Check Functions ---
+bool performMouseCheck() {
+    // Check for mouse presence by measuring the stability (fluctuation/voltage) on the analog pin.
+    int minMouseReading = 1023;
+    int maxMouseReading = 0;
+    elapsedMillis componentCheckTimer;
+    while (componentCheckTimer < FLUC_CHECK_DURATION_MS) {
+        int currentReading = fastAnalogRead(PIN_MOUSE_PRESENCE);
+        if (currentReading < minMouseReading) minMouseReading = currentReading;
+        if (currentReading > maxMouseReading) maxMouseReading = currentReading;
+        delay(10); // Briefly pause to not overwhelm the ADC
+    }
+
+    // Condition 1: Is the signal stable (low fluctuation)?
+    bool isStable = (maxMouseReading - minMouseReading) < MOUSE_STABILITY_THRESHOLD_ADC;
+    // Condition 2: Is the voltage level high enough?
+    bool isHighEnough = minMouseReading > MOUSE_PRESENCE_MIN_ADC_VALUE;
+    // The check passes only if BOTH conditions are true.
+    return isStable && isHighEnough;
+}
 
 // --- Setup Function ---
 void setup() {
@@ -110,17 +134,19 @@ void setup() {
     // Initialize USB Mouse functionality.
     Mouse.begin();
 
-    // Set the click pin to output mode. The pinMode function is sufficient to
-    // configure it for GPIO use, which allows for direct register manipulation later.
+    // Set the click pin to output mode.
     pinMode(PIN_SEND_CLICK, OUTPUT);
     // Set the initial state to LOW using a fast method to ensure it's off before the loop begins.
     digitalWriteFast(PIN_SEND_CLICK, LOW);
+
+    // Configure the mouse presence pin as an input with a pull-down resistor, prevents floating.
+    pinMode(PIN_MOUSE_PRESENCE, INPUT_PULLDOWN);
 
     debouncer.attach(PIN_BUTTON, INPUT_PULLUP);
     debouncer.interval(25); // Debounce interval in ms
 
     // Initialize display
-    if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
         // This is a critical error, but we can't display it.
         // We'll enter the error state which turns on the solid LED.
         enterErrorState("Monitor Fail");
@@ -158,26 +184,11 @@ void setup() {
     }
     bool sensorOk = (maxLightReading - minLightReading) < SENSOR_FLUCTUATION_THRESHOLD;
 
-    // Check for mouse presence by measuring the stability (fluctuation/voltage) on the analog pin.
-    int minMouseReading = 1023;
-    int maxMouseReading = 0;
-    componentCheckTimer = 0; // Reset the timer for the next check
-    while (componentCheckTimer < FLUC_CHECK_DURATION_MS) {
-        int currentReading = fastAnalogRead(PIN_MOUSE_PRESENCE);
-        if (currentReading < minMouseReading) minMouseReading = currentReading;
-        if (currentReading > maxMouseReading) maxMouseReading = currentReading;
-        delay(10); // Briefly pause to not overwhelm the ADC
-    }
-
-    // Condition 1: Is the signal stable (low fluctuation)?
-    bool isStable = (maxMouseReading - minMouseReading) < MOUSE_STABILITY_THRESHOLD_ADC;
-    // Condition 2: Is the voltage level high enough?
-    bool isHighEnough = minMouseReading > MOUSE_PRESENCE_MIN_ADC_VALUE;
-    // The check passes only if BOTH conditions are true.
-    bool mouseOk = isStable && isHighEnough;
+    // Check for mouse presence using the new helper function.
+    mouseIsOk = performMouseCheck();
 
     // Display the setup screen once, so user sees the status
-    drawSetupScreen(monitorOk, sensorOk, mouseOk);
+    drawSetupScreen(monitorOk, sensorOk, mouseIsOk);
 
     // Now handle errors, directing to debug screens if necessary
     if (!sensorOk) {
@@ -186,7 +197,7 @@ void setup() {
         return; // Skip the rest of setup and go to loop()
     }
 
-    if (!mouseOk) {
+    if (!mouseIsOk) {
         currentState = State::DEBUG_MOUSE;
         digitalWrite(PIN_LED_BUILTIN, HIGH); // Turn on LED to start blink cycle
         return; // Skip the rest of setup and go to loop()
@@ -231,7 +242,7 @@ void setup() {
             }
 
             // While waiting for a valid hold/release, keep showing the screen.
-            drawSetupScreen(monitorOk, sensorOk, mouseOk);
+            drawSetupScreen(monitorOk, sensorOk, mouseIsOk);
         }
     }
 }
@@ -310,6 +321,9 @@ void loop() {
                                          previousState == State::DIRECT_UE4_APERTURE ||
                                          previousState == State::RUNS_COMPLETE);
 
+                // Define which states allow for a "BYPASS" action.
+                bool isBypassValid = (previousState == State::DEBUG_MOUSE);
+
                 // Action 1: RESET (highest priority)
                 if (heldDuration > BUTTON_RESET_DURATION_MS) {
                     SCB_AIRCR = 0x05FA0004; // Software Reset
@@ -321,7 +335,13 @@ void loop() {
                     debugMenuSelection = 0; // Reset menu choice
                     currentState = State::SELECT_DEBUG_MENU;
                 }
-                // Action 3: EXIT (from an active/completed run)
+                // Action 3: BYPASS (from mouse debug screen)
+                else if (isBypassValid && heldDuration > BUTTON_HOLD_DURATION_MS) {
+                    digitalWrite(PIN_LED_BUILTIN, LOW); // Turn off the debug LED
+                    menuSelection = 0; // Reset menu choice
+                    currentState = State::SELECT_MENU; // Proceed to the main menu
+                }
+                // Action 4: EXIT (from an active/completed run)
                 else if (isExitClearValid && heldDuration > BUTTON_HOLD_DURATION_MS) {
                     // Determine which mode's stats to clear.
                     State modeToClear = (previousState == State::RUNS_COMPLETE) ? selectedMode : previousState;
@@ -336,7 +356,7 @@ void loop() {
                     menuSelection = 0;
                     currentState = State::SELECT_MENU;
                 }
-                // Action 4: SELECT (only if contextually valid)
+                // Action 5: SELECT (only if contextually valid)
                 else if (isSelectActionValid && heldDuration > BUTTON_HOLD_DURATION_MS) {
                     // --- CONTEXT-AWARE SELECTION ---
                     if (previousState == State::SELECT_MENU) {
@@ -359,25 +379,21 @@ void loop() {
                         bool shouldStartMode = true; // Assume we will start unless a check fails.
 
                         // --- Check for modes requiring a PC connection ---
-                        if (selectedMode == State::DIRECT_UE4_APERTURE) {
+                        if (selectedMode == State::DIRECT_UE4_APERTURE || selectedMode == State::DEBUG_POLLING_TEST) {
                             if (usb_configuration == 0) {
                                 shouldStartMode = false; // Veto the mode start.
-
-                                // Display error message to the user.
-                                display.clearDisplay();
-                                display.setTextSize(1);
-                                display.setTextColor(SSD1306_WHITE);
-                                centerText("CONNECTION ERROR", 0);
-                                display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
-                                centerText("Direct Mode requires", 20);
-                                centerText("a PC connection.", 32);
-                                centerText("Returning to menu...", 48);
-                                display.display();
-                                delay(3500);
-
+                                displayErrorScreen("CONNECTION ERROR", "This mode requires", "a PC connection.", "Returning to menu...");
                                 menuSelection = 0; // Reset menu for a clean slate
                                 currentState = State::SELECT_MENU; // Go back to the main menu
                             }
+                        }
+
+                        // --- Check for modes requiring a mouse connection ---
+                        if (shouldStartMode && (selectedMode == State::AUTO_MODE || selectedMode == State::AUTO_UE4_APERTURE) && !mouseIsOk) {
+                            shouldStartMode = false; // Veto the mode start.
+                            displayErrorScreen("CONNECTION ERROR", "Auto modes require", "a mouse connection.", "Returning to menu...");
+                            menuSelection = 0; // Reset menu for a clean slate
+                            currentState = State::SELECT_MENU; // Go back to the main menu
                         }
 
                         if (shouldStartMode) {
@@ -406,17 +422,7 @@ void loop() {
                             currentState = State::DEBUG_LSENSOR;
                         } else { // debugMenuSelection == 2
                              if (usb_configuration == 0) {
-                                // Display error message if not connected to a PC.
-                                display.clearDisplay();
-                                display.setTextSize(1);
-                                display.setTextColor(SSD1306_WHITE);
-                                centerText("CONNECTION ERROR", 0);
-                                display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
-                                centerText("Polling Test requires", 20);
-                                centerText("a PC connection.", 32);
-                                centerText("Returning...", 48);
-                                display.display();
-                                delay(3500);
+                                displayErrorScreen("CONNECTION ERROR", "Polling Test requires", "a PC connection.", "Returning...");
                                 currentState = State::SELECT_DEBUG_MENU; // Go back
                             } else {
                                 // Draw the polling screen ONCE before entering the high-speed loop.
@@ -435,7 +441,7 @@ void loop() {
                         }
                     }
                 }
-                // Action 5: Aborted hold or invalid action, return to previous state
+                // Action 6: Aborted hold or invalid action, return to previous state
                 else {
                     currentState = previousState;
                 }
@@ -900,6 +906,21 @@ void centerText(const char* text, int y) {
 }
 
 // --- Display Functions ---
+
+// Displays a formatted, full-screen error message and then pauses.
+void displayErrorScreen(const char* title, const char* line1, const char* line2, const char* line3, unsigned long delayMs) {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    centerText(title, 0);
+    display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
+    if (line1) centerText(line1, 20);
+    if (line2) centerText(line2, 32);
+    if (line3) centerText(line3, 48);
+    display.display();
+    delay(delayMs);
+}
+
 void updateDisplay() {
     // Do not update the display from here if we are in setup mode, as it has its own display logic
     if (currentState == State::SETUP) return;
@@ -984,18 +1005,21 @@ void drawHoldActionScreen() {
     const int barWidth = 80;
     const int barX = SCREEN_WIDTH - barWidth - 6;
 
-    // --- SELECT / EXIT Bar ---
+    // --- SELECT / EXIT / BYPASS Bar ---
     display.setCursor(0, 18);
     bool isSelectValid = (previousState == State::SELECT_MENU || previousState == State::SELECT_RUN_LIMIT || previousState == State::SELECT_DEBUG_MENU || currentState == State::SETUP);
     bool isExitClearValid = (previousState == State::AUTO_MODE || previousState == State::AUTO_UE4_APERTURE || previousState == State::DIRECT_UE4_APERTURE || previousState == State::RUNS_COMPLETE);
+    bool isBypassValid = (previousState == State::DEBUG_MOUSE);
 
-    if (isSelectValid) {
+    if (isBypassValid) {
+        display.print("BYPASS");
+    } else if (isSelectValid) {
         display.print("SELECT");
     } else if (isExitClearValid) {
         display.print("EXIT");
     }
 
-    if (isSelectValid || isExitClearValid) {
+    if (isBypassValid || isSelectValid || isExitClearValid) {
         float progress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_HOLD_DURATION_MS - BUTTON_HOLD_START_MS);
         progress = constrain(progress, 0.0, 1.0);
         display.drawRect(barX, 16, barWidth, 10, SSD1306_WHITE);
