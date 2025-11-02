@@ -6,6 +6,11 @@ This project provides the firmware for a powerful, DIY "click-to-photon" system 
 
 Designed for accuracy, it uses Teensy-specific optimizations for high-speed I/O. The device features an OLED display for real-time statistics and is controlled by a simple, intuitive single button.
 
+## ⚠️ Important: Anticheat Warning
+When testing competitive games or any application with an anticheat system, it is strongly recommended to use **Automatic Mode** with the device powered by an external source (e.g., a USB power bank or wall adapter). **Do not connect the device directly to your PC during these tests.**
+
+While the firmware behaves as a standard HID mouse, any unrecognized custom device carries a small risk of being flagged by aggressive anticheat systems. Using Automatic Mode with an external power source completely isolates the device from the PC, ensuring safety.
+
 ## Key Features
 
 *   **High-Speed Measurement:** Uses the Teensy `ADC` library and `digitalWriteFast` for minimal I/O overhead and rapid sensor readings.
@@ -98,9 +103,9 @@ Your best option is to use the **RTSS FCAT Latency Marker**.
 The device is controlled with a single button using different press durations:
 
 *   **Short Press (Click):** Cycles through menu options.
-*   **Long Press (Select):** Hold for ~0.75 seconds. A "SELECT" progress bar will fill. Releasing selects the highlighted option.
-*   **Debug Press (Debug Menu):** Hold for ~1.25 seconds. A "DEBUG" bar will fill, taking you to the hardware diagnostic tools.
-*   **Reset Press (Reset):** Hold for ~1.75 seconds. A "RESET" bar will fill. Releasing will perform a software reset of the device.
+*   **Long Press (Select):** Hold for ~0.8 seconds. A "SELECT" progress bar will fill. Releasing selects the highlighted option.
+*   **Debug Press (Debug Menu):** Hold for ~1.3 seconds. A "DEBUG" bar will fill, taking you to the hardware diagnostic tools.
+*   **Reset Press (Reset):** Hold for ~1.8 seconds. A "RESET" bar will fill. Releasing will perform a software reset of the device.
 
 ### On-Boot: The Setup Screen
 
@@ -112,28 +117,28 @@ On startup, the device enters `SETUP MODE` and performs a hardware diagnostic. I
 
 ### 1. Automatic Mode
 
-A general-purpose test that measures the latency of your display panel.
-*   **How it works:** The device sends a click signal via its output pin, starts a timer, and waits for the sensor to detect the screen changing from dark to light.
-*   **Use case:** Great for getting a baseline system reading or testing a monitor's raw response time without involving the USB stack.
+A general-purpose test that measures latency from the mouse switch to the screen.
+*   **How it works:** The device sends a click signal via its output pin (triggering the attached mouse), starts a timer, and waits for the sensor to detect the screen changing from dark to light.
+*   **Use case:** This mode is highly versatile. It's excellent for getting a baseline system reading or comparing the hardware latency of different mice. While designed for standardized markers like the RTSS FCAT marker or NVIDIA's Reflex Flash, it can be adapted for other scenarios. By using the **LSensor Debug** tool, you can observe the sensor's raw output and adjust the `LIGHT_SENSOR_THRESHOLD` in the `config.h` file to trigger on other in-game visual events, such as a muzzle flash. This allows for latency measurement in many situations, though it may require careful tuning.
 
 ### 2. Auto UE4 Aperture Mode
 
-Designed specifically for the **Aperture Grille Latency Tester** software. This is the recommended mode for initial setup and calibration.
+Designed specifically for the **Aperture Grille Latency Tester** software.
 *   **Website:** [Aperture Grille Software](https://www.aperturegrille.com/software/)
 *   **How it works:** Similar to Automatic Mode, but tailored for the black/white toggle in the Aperture Grille app. It runs a smart sync and warm-up routine to ensure measurements are synchronized and repeatable.
-*   **Use case:** Provides a controlled environment for comparing settings like VSync, frame caps, or driver options.
+*   **Use case:** This mode provides a highly stable and repeatable environment ideal for A/B testing the impact of system changes. Use it to accurately measure the effects of different graphics driver settings, OS optimizations, monitor configurations (overdrive, G-Sync/FreeSync), and to compare different physical mice.
 
 ### 3. Direct UE4 Aperture Mode
 
-Measures the entire latency pipeline, from USB input to photon output.
+Measures the entire latency pipeline, from USB input to photon output, using the Aperture Grille software.
 *   **How it works:** The Teensy acts as a real 8kHz USB mouse and sends a standard click to the PC. The timer starts the instant the USB packet is sent. This mode relies on the 8kHz polling patch for its high accuracy.
-*   **Use case:** Measures the complete end-to-end latency of your system, without needing to wire a mouse.
+*   **Use case:** This is the ultimate test for measuring your complete end-to-end system latency. Because it uses the Teensy as the input device, it's perfect for scientifically testing the latency impact of software settings (drivers, VSync, frame caps, etc.) in a controlled environment, removing the physical mouse as a variable.
 
 ---
 
 ## Verifying Your Polling Rate
 
-To verify the Teensy is running at a 8kHz polling rate, use the integrated tester. Hold the button for ~1.25 seconds to enter the **Debug Menu**, then select **Polling Test**. The device will begin moving your mouse cursor in a circle. Use a PC utility like **[HamsterWheel Mouse Tester](https://github.com/szabodanika/HamsterWheel/releases/tag/0.4)** to confirm a stable ~8000 Hz rate.
+To verify the Teensy is running at a 8kHz polling rate, use the integrated tester. Hold the button for ~1.3 seconds to enter the **Debug Menu**, then select **Polling Test**. The device will begin moving your mouse cursor in a circle. Use a PC utility like **[HamsterWheel Mouse Tester](https://github.com/szabodanika/HamsterWheel/releases/tag/0.4)** to confirm a stable ~8000 Hz rate.
 
 A single short press stops the test and returns you to the debug menu.
 
@@ -159,7 +164,7 @@ The huge variance between minimum and maximum readings is not an error; it's the
 Let's use a realistic gaming scenario: 240 FPS on a 240Hz monitor, with an 8kHz mouse.
 
 *   **A "perfectly lucky" click (Minimum Latency):** Your click occurs right before the USB poll, which happens right before the game's input sample, and the frame is rendered just in time for the next monitor refresh. All the variable delays are near zero.
-    *   *Example:* `~1.5ms (mouse hardware) + 0.1ms (USB) + 0.5ms (Game) + 0.5ms (Scanout)` = **~2.6ms** (a very low, but plausible reading).
+    *   *Example:* `~1.5ms (mouse hardware) + 0.1ms (USB poll) + 0.5ms (Game) + 0.5ms (Scanout)` = **~2.6ms** (a very low, but plausible reading).
 
 *   **An "unlucky" click (Maximum Latency):** Your click happens *just after* each of these checks, forcing it to wait for the next full cycle at every single step.
     *   *Example:* `~1.5ms (hardware) + 0.125ms (missed 8kHz poll) + 4.167ms (missed game sample) + 4.167ms (missed scanout)` = **~10.0ms**

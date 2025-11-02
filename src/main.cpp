@@ -35,6 +35,13 @@ State currentState = State::SETUP;
 State previousState = State::SETUP;
 State selectedMode = State::SETUP;
 
+// Enum for the result of the smart sync function
+enum class SyncResult {
+    SUCCESS,
+    FAILED,
+    HOLD_ABORT
+};
+
 // --- Menu Variables ---
 int menuSelection = 0;
 const int menuOptionCount = 3;
@@ -88,9 +95,9 @@ void enterErrorState(const char* errorMessage);
 void updateStats(LatencyStats& stats, unsigned long latencyMicros);
 int fastAnalogRead(uint8_t pin);
 void drawSyncScreen(const char* message, int y = 32);
-bool performSmartSync(bool isDirectMode);
+SyncResult performSmartSync(bool isDirectMode);
 void centerText(const char* text, int y = -1);
-void delayWithJitter(unsigned long baseDelayMs);
+bool delayWithJitterAndAbortCheck(unsigned long baseDelayMs);
 
 // --- Setup Function ---
 void setup() {
@@ -234,17 +241,6 @@ void loop() {
     // Always update the debouncer for any state that might use the button
     debouncer.update();
 
-    // Global check to enter the HOLD_ACTION state from any operational state
-    bool canEnterHold = (currentState == State::SELECT_MENU || currentState == State::SELECT_RUN_LIMIT ||
-                         currentState == State::SELECT_DEBUG_MENU || currentState == State::AUTO_MODE ||
-                         currentState == State::AUTO_UE4_APERTURE || currentState == State::DIRECT_UE4_APERTURE ||
-                         currentState == State::DEBUG_MOUSE || currentState == State::DEBUG_LSENSOR ||
-                         currentState == State::RUNS_COMPLETE);
-    if (canEnterHold && debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
-        previousState = currentState; // Remember where we came from
-        currentState = State::HOLD_ACTION;
-    }
-
     // Handle blinking LED for debug states
     if (currentState == State::DEBUG_MOUSE || currentState == State::DEBUG_LSENSOR) {
         if (ledTimer > 1000) { // 1 second interval
@@ -259,22 +255,40 @@ void loop() {
             break;
         case State::DEBUG_MOUSE:
         case State::DEBUG_LSENSOR:
-            // No action logic needed here, just display updates and global reset check
+            // Check for hold action to exit debug screens
+            if (debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+            }
             break;
         case State::SELECT_MENU:
+            if (debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+                break;
+            }
             // Act on button release (short press) to cycle menu
             if (debouncer.rose()) {
-                // A long press is handled by the HOLD_ACTION state, so this only fires for short presses.
                 menuSelection = (menuSelection + 1) % menuOptionCount;
             }
             break;
         case State::SELECT_RUN_LIMIT:
+            if (debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+                break;
+            }
             // Act on button release (short press) to cycle run limit options
             if (debouncer.rose()) {
                 runLimitMenuSelection = (runLimitMenuSelection + 1) % runLimitMenuOptionCount;
             }
             break;
         case State::SELECT_DEBUG_MENU:
+            if (debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+                break;
+            }
             // Act on button release (short press) to cycle debug options
             if (debouncer.rose()) {
                 debugMenuSelection = (debugMenuSelection + 1) % debugMenuOptionCount;
@@ -290,6 +304,12 @@ void loop() {
                                             previousState == State::SELECT_RUN_LIMIT ||
                                             previousState == State::SELECT_DEBUG_MENU);
 
+                // Define which states allow for an "EXIT" action.
+                bool isExitClearValid = (previousState == State::AUTO_MODE ||
+                                         previousState == State::AUTO_UE4_APERTURE ||
+                                         previousState == State::DIRECT_UE4_APERTURE ||
+                                         previousState == State::RUNS_COMPLETE);
+
                 // Action 1: RESET (highest priority)
                 if (heldDuration > BUTTON_RESET_DURATION_MS) {
                     SCB_AIRCR = 0x05FA0004; // Software Reset
@@ -301,7 +321,22 @@ void loop() {
                     debugMenuSelection = 0; // Reset menu choice
                     currentState = State::SELECT_DEBUG_MENU;
                 }
-                // Action 3: SELECT (only if contextually valid)
+                // Action 3: EXIT (from an active/completed run)
+                else if (isExitClearValid && heldDuration > BUTTON_HOLD_DURATION_MS) {
+                    // Determine which mode's stats to clear.
+                    State modeToClear = (previousState == State::RUNS_COMPLETE) ? selectedMode : previousState;
+                    if (modeToClear == State::AUTO_MODE) {
+                        statsAuto = LatencyStats();
+                    } else if (modeToClear == State::AUTO_UE4_APERTURE) {
+                        statsBtoW = LatencyStats(); statsWtoB = LatencyStats(); isFirstUe4Run = true;
+                    } else if (modeToClear == State::DIRECT_UE4_APERTURE) {
+                        statsDirectBtoW = LatencyStats(); statsDirectWtoB = LatencyStats(); isFirstUe4Run = true;
+                    }
+                    // Return to the main menu.
+                    menuSelection = 0;
+                    currentState = State::SELECT_MENU;
+                }
+                // Action 4: SELECT (only if contextually valid)
                 else if (isSelectActionValid && heldDuration > BUTTON_HOLD_DURATION_MS) {
                     // --- CONTEXT-AWARE SELECTION ---
                     if (previousState == State::SELECT_MENU) {
@@ -400,7 +435,7 @@ void loop() {
                         }
                     }
                 }
-                // Action 4: Aborted hold or invalid action, return to previous state
+                // Action 5: Aborted hold or invalid action, return to previous state
                 else {
                     currentState = previousState;
                 }
@@ -422,7 +457,7 @@ void loop() {
             bool isCountingDark = false;    // Flag to know if we've started timing a dark period.
 
             while (true) { // Loop until we confirm 4ms of darkness or timeout.
-                if (overallSyncTimer > 2000000) {
+                if (overallSyncTimer > MEASUREMENT_TIMEOUT_MICROS) {
                     timeoutOccurred = true;
                     break;
                 }
@@ -450,7 +485,10 @@ void loop() {
 
             if (timeoutOccurred) {
                 // If timeout occurred during sync, skip this run and try again.
-                delayWithJitter(AUTO_MODE_RUN_DELAY_MS);
+                if (delayWithJitterAndAbortCheck(AUTO_MODE_RUN_DELAY_MS)) {
+                    previousState = currentState;
+                    currentState = State::HOLD_ACTION;
+                }
                 break; // Skip this run and try again.
             }
 
@@ -465,7 +503,7 @@ void loop() {
             //    The click signal remains HIGH (mouse button held down) during this period.
             while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
                 // If the screen doesn't turn white within a reasonable time, it's a measurement timeout.
-                if (latencyTimer > 2000000) { // 2 second timeout for measurement
+                if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) {
                     timeoutOccurred = true;
                     break;
                 }
@@ -481,7 +519,10 @@ void loop() {
                 updateStats(statsAuto, latencyMicros);
             }
 
-            delayWithJitter(AUTO_MODE_RUN_DELAY_MS);
+            if (delayWithJitterAndAbortCheck(AUTO_MODE_RUN_DELAY_MS)) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+            }
             break;
         }
         case State::AUTO_UE4_APERTURE: {
@@ -493,9 +534,15 @@ void loop() {
 
             // MODIFIED: On the first run, perform sync AND a warm-up cycle.
             if (isFirstUe4Run) {
-                bool syncSuccess = performSmartSync(false); // false for AUTO mode click
+                SyncResult syncResult = performSmartSync(false); // false for AUTO mode click
 
-                if (syncSuccess) {
+                if (syncResult == SyncResult::HOLD_ABORT) {
+                    previousState = currentState;
+                    currentState = State::HOLD_ACTION;
+                    break;
+                }
+
+                if (syncResult == SyncResult::SUCCESS) {
                     // --- WARM-UP CYCLE ---
                     drawSyncScreen("Warming up...", 32);
 
@@ -504,16 +551,16 @@ void loop() {
                     delayMicroseconds(MOUSE_CLICK_HOLD_MICROS);
                     digitalWriteFast(PIN_SEND_CLICK, LOW);
                     elapsedMicros warmupTimer;
-                    while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delayWithJitter(UE4_MODE_RUN_DELAY_MS);
+                    while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD && warmupTimer < MEASUREMENT_TIMEOUT_MICROS);
+                    delayWithJitterAndAbortCheck(UE4_MODE_RUN_DELAY_MS);
 
                     // Warm-up 2: W-to-B (don't measure)
                     digitalWriteFast(PIN_SEND_CLICK, HIGH);
                     delayMicroseconds(MOUSE_CLICK_HOLD_MICROS);
                     digitalWriteFast(PIN_SEND_CLICK, LOW);
                     warmupTimer = 0;
-                    while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delayWithJitter(UE4_MODE_RUN_DELAY_MS);
+                    while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD && warmupTimer < MEASUREMENT_TIMEOUT_MICROS);
+                    delayWithJitterAndAbortCheck(UE4_MODE_RUN_DELAY_MS);
 
                     isFirstUe4Run = false;         // Sync and warm-up complete.
                     ue4_isWaitingForWhite = true;  // We ended on DARK, so we expect WHITE next.
@@ -527,14 +574,17 @@ void loop() {
             elapsedMicros syncTimer;
             if (ue4_isWaitingForWhite) {
                 while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD) {
-                    if (syncTimer > 2000000) { timeoutOccurred = true; break; }
+                    if (syncTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
             } else {
                 while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
-                    if (syncTimer > 2000000) { timeoutOccurred = true; break; }
+                    if (syncTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
             }
-            if (timeoutOccurred) { delayWithJitter(UE4_MODE_RUN_DELAY_MS); break; }
+            if (timeoutOccurred) {
+                if(delayWithJitterAndAbortCheck(UE4_MODE_RUN_DELAY_MS)) { previousState = currentState; currentState = State::HOLD_ACTION; }
+                break;
+            }
 
             timeoutOccurred = false;
             if (ue4_isWaitingForWhite) {
@@ -543,7 +593,7 @@ void loop() {
                 delayMicroseconds(MOUSE_CLICK_HOLD_MICROS);
                 digitalWriteFast(PIN_SEND_CLICK, LOW);
                 while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
-                    if (latencyTimer > 2000000) { timeoutOccurred = true; break; }
+                    if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
                 if (!timeoutOccurred) {
                     updateStats(statsBtoW, latencyTimer);
@@ -555,14 +605,17 @@ void loop() {
                 delayMicroseconds(MOUSE_CLICK_HOLD_MICROS);
                 digitalWriteFast(PIN_SEND_CLICK, LOW);
                 while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD) {
-                    if (latencyTimer > 2000000) { timeoutOccurred = true; break; }
+                    if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
                 if (!timeoutOccurred) {
                     updateStats(statsWtoB, latencyTimer);
                     ue4_isWaitingForWhite = true;
                 }
             }
-            delayWithJitter(UE4_MODE_RUN_DELAY_MS);
+            if (delayWithJitterAndAbortCheck(UE4_MODE_RUN_DELAY_MS)) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+            }
             break;
         }
         case State::DIRECT_UE4_APERTURE: {
@@ -573,23 +626,29 @@ void loop() {
 
             // On the first run, perform sync AND a warm-up cycle.
             if (isFirstUe4Run) {
-                bool syncSuccess = performSmartSync(true); // true for DIRECT mode click
+                SyncResult syncResult = performSmartSync(true); // true for DIRECT mode click
 
-                if (syncSuccess) {
+                if (syncResult == SyncResult::HOLD_ABORT) {
+                    previousState = currentState;
+                    currentState = State::HOLD_ACTION;
+                    break;
+                }
+
+                if (syncResult == SyncResult::SUCCESS) {
                     // --- WARM-UP CYCLE ---
                     drawSyncScreen("Warming up...", 32);
 
                     // Warm-up 1: B-to-W (don't measure)
                     Mouse.click(MOUSE_LEFT);
                     elapsedMicros warmupTimer;
-                    while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delayWithJitter(UE4_MODE_RUN_DELAY_MS);
+                    while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD && warmupTimer < MEASUREMENT_TIMEOUT_MICROS);
+                    delayWithJitterAndAbortCheck(UE4_MODE_RUN_DELAY_MS);
 
                     // Warm-up 2: W-to-B (don't measure)
                     Mouse.click(MOUSE_LEFT);
                     warmupTimer = 0;
-                    while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD && warmupTimer < 2000000);
-                    delayWithJitter(UE4_MODE_RUN_DELAY_MS);
+                    while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD && warmupTimer < MEASUREMENT_TIMEOUT_MICROS);
+                    delayWithJitterAndAbortCheck(UE4_MODE_RUN_DELAY_MS);
 
                     isFirstUe4Run = false;         // Sync and warm-up complete.
                     ue4_isWaitingForWhite = true;  // We ended on DARK, so we expect WHITE next.
@@ -603,21 +662,24 @@ void loop() {
             elapsedMicros syncTimer;
             if (ue4_isWaitingForWhite) {
                 while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD) {
-                    if (syncTimer > 2000000) { timeoutOccurred = true; break; }
+                    if (syncTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
             } else {
                 while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
-                    if (syncTimer > 2000000) { timeoutOccurred = true; break; }
+                    if (syncTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
             }
-            if (timeoutOccurred) { delayWithJitter(UE4_MODE_RUN_DELAY_MS); break; }
+            if (timeoutOccurred) {
+                if (delayWithJitterAndAbortCheck(UE4_MODE_RUN_DELAY_MS)) { previousState = currentState; currentState = State::HOLD_ACTION; }
+                break;
+            }
 
             timeoutOccurred = false;
             if (ue4_isWaitingForWhite) {
                 elapsedMicros latencyTimer;
                 Mouse.click(MOUSE_LEFT);
                 while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
-                    if (latencyTimer > 2000000) { timeoutOccurred = true; break; }
+                    if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
                 if (!timeoutOccurred) {
                     updateStats(statsDirectBtoW, latencyTimer);
@@ -627,14 +689,18 @@ void loop() {
                 elapsedMicros latencyTimer;
                 Mouse.click(MOUSE_LEFT);
                 while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD) {
-                    if (latencyTimer > 2000000) { timeoutOccurred = true; break; }
+                    if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
                 if (!timeoutOccurred) {
                     updateStats(statsDirectWtoB, latencyTimer);
                     ue4_isWaitingForWhite = true;
                 }
             }
-            delayWithJitter(UE4_MODE_RUN_DELAY_MS);
+
+            if (delayWithJitterAndAbortCheck(UE4_MODE_RUN_DELAY_MS)) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+            }
             break;
         }
         case State::DEBUG_POLLING_TEST: {
@@ -670,9 +736,12 @@ void loop() {
             break;
         }
         case State::RUNS_COMPLETE:
-            // This is a halt state. No actions are performed.
-            // The display will freeze on the final statistics from the last run.
-            // Hold the button to reset the device.
+            // This is a halt state. The display will freeze on the final statistics.
+            // Check for a hold action to allow user to exit.
+            if (debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+            }
             break;
         case State::ERROR_HALT:
             return; // Halt program for critical errors
@@ -685,20 +754,25 @@ void loop() {
     }
 }
 
-// Helper function to add random jitter to delays between measurement runs.
-void delayWithJitter(unsigned long baseDelayMs) {
-    // Adding random jitter breaks any potential phase-lock between the Teensy's
-    // loop and the game's render loop, ensuring more statistically accurate
-    // sampling over many runs.
-    // The `random()` function's max value is exclusive, so im adding 1 to make it inclusive.
+// Replaces delay() with a non-blocking version that checks for an abort signal (button hold).
+// Returns true if an abort was detected, false otherwise.
+bool delayWithJitterAndAbortCheck(unsigned long baseDelayMs) {
     long jitter = random(-MODE_DELAY_JITTER_MS, MODE_DELAY_JITTER_MS + 1);
-
-    // Ensure the final delay is not negative if jitter is large and negative.
     long finalDelay = baseDelayMs + jitter;
-    if (finalDelay > 0) {
-        delay(finalDelay);
+
+    if (finalDelay <= 0) return false;
+
+    elapsedMillis delayTimer;
+    while (delayTimer < (unsigned long)finalDelay) {
+        debouncer.update();
+        if (debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
+            return true; // Abort signal detected
+        }
+        delay(1); // Yield for a moment, allows other processes to run.
     }
+    return false; // No abort
 }
+
 
 // Helper function to display a full-screen status message during the sync process.
 void drawSyncScreen(const char* message, int y) {
@@ -712,7 +786,7 @@ void drawSyncScreen(const char* message, int y) {
 }
 
 // Performs an intelligent synchronization routine for UE4 modes.
-bool performSmartSync(bool isDirectMode) {
+SyncResult performSmartSync(bool isDirectMode) {
     // Announce the sync process
     drawSyncScreen("Sending focus click...");
 
@@ -725,11 +799,13 @@ bool performSmartSync(bool isDirectMode) {
         delayMicroseconds(MOUSE_CLICK_HOLD_MICROS);
         digitalWriteFast(PIN_SEND_CLICK, LOW);
     }
-    delay(250); // Give the OS time to react to the focus change.
+    // Give the OS time to react to the focus change.
+    if (delayWithJitterAndAbortCheck(250)) return SyncResult::HOLD_ABORT;
 
     // --- Step 2: Determine the current screen state ---
     drawSyncScreen("Checking state...");
-    delay(500); // Wait for light to stabilize after potential screen changes.
+    // Wait for light to stabilize after potential screen changes.
+    if (delayWithJitterAndAbortCheck(500)) return SyncResult::HOLD_ABORT;
     int initialState = fastAnalogRead(PIN_LIGHT_SENSOR);
 
     // --- Step 3: Drive the state to DARK ---
@@ -739,7 +815,7 @@ bool performSmartSync(bool isDirectMode) {
         drawSyncScreen("State is WHITE.", 24);
         centerText("Sending toggle click...", 40);
         display.display();
-        delay(500);
+        if (delayWithJitterAndAbortCheck(500)) return SyncResult::HOLD_ABORT;
 
         if (isDirectMode) {
             Mouse.click(MOUSE_LEFT);
@@ -751,15 +827,15 @@ bool performSmartSync(bool isDirectMode) {
     } else if (initialState <= DARK_SENSOR_THRESHOLD) {
         // The screen is already DARK. No extra click is needed.
         drawSyncScreen("State is already DARK.");
-        delay(1500); // Hold message for user
-        return true; // We are already in the desired state.
+        if (delayWithJitterAndAbortCheck(1500)) return SyncResult::HOLD_ABORT;
+        return SyncResult::SUCCESS; // We are already in the desired state.
     } else {
         // The state is indeterminate (e.g., grey screen, mid-transition).
         drawSyncScreen("Indeterminate state!", 24);
         centerText("Sync failed. Retrying...", 40);
         display.display();
-        delay(2000);
-        return false;
+        if (delayWithJitterAndAbortCheck(2000)) return SyncResult::HOLD_ABORT;
+        return SyncResult::FAILED;
     }
 
     // --- Step 4: Verify the screen is now DARK ---
@@ -769,17 +845,19 @@ bool performSmartSync(bool isDirectMode) {
         if (fastAnalogRead(PIN_LIGHT_SENSOR) <= DARK_SENSOR_THRESHOLD) {
             // Success! The screen is now dark and we are in a known state.
             drawSyncScreen("Sync complete.");
-            delay(1000); // Hold message for user
-            return true;
+            if (delayWithJitterAndAbortCheck(1000)) return SyncResult::HOLD_ABORT;
+            return SyncResult::SUCCESS;
         }
+        // Check for abort during verification loop
+        if (delayWithJitterAndAbortCheck(5)) return SyncResult::HOLD_ABORT;
     }
 
     // If we get here, the verification timed out.
     drawSyncScreen("Sync FAILED!", 24);
     centerText("Screen not DARK. Retrying...", 40);
     display.display();
-    delay(2000);
-    return false;
+    if (delayWithJitterAndAbortCheck(2000)) return SyncResult::HOLD_ABORT;
+    return SyncResult::FAILED;
 }
 
 // --- Optimized Analog Read ---
@@ -906,15 +984,22 @@ void drawHoldActionScreen() {
     const int barWidth = 80;
     const int barX = SCREEN_WIDTH - barWidth - 6;
 
-    // --- SELECT Bar ---
+    // --- SELECT / EXIT Bar ---
     display.setCursor(0, 18);
-    // Only show "SELECT" as an option if it's a valid action from the current state
-    if (previousState == State::SELECT_MENU || previousState == State::SELECT_RUN_LIMIT || previousState == State::SELECT_DEBUG_MENU || currentState == State::SETUP) {
+    bool isSelectValid = (previousState == State::SELECT_MENU || previousState == State::SELECT_RUN_LIMIT || previousState == State::SELECT_DEBUG_MENU || currentState == State::SETUP);
+    bool isExitClearValid = (previousState == State::AUTO_MODE || previousState == State::AUTO_UE4_APERTURE || previousState == State::DIRECT_UE4_APERTURE || previousState == State::RUNS_COMPLETE);
+
+    if (isSelectValid) {
         display.print("SELECT");
-        float selectProgress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_HOLD_DURATION_MS - BUTTON_HOLD_START_MS);
-        selectProgress = constrain(selectProgress, 0.0, 1.0);
+    } else if (isExitClearValid) {
+        display.print("EXIT");
+    }
+
+    if (isSelectValid || isExitClearValid) {
+        float progress = (float)(holdTime - BUTTON_HOLD_START_MS) / (BUTTON_HOLD_DURATION_MS - BUTTON_HOLD_START_MS);
+        progress = constrain(progress, 0.0, 1.0);
         display.drawRect(barX, 16, barWidth, 10, SSD1306_WHITE);
-        display.fillRect(barX, 16, (int)(barWidth * selectProgress), 10, SSD1306_WHITE);
+        display.fillRect(barX, 16, (int)(barWidth * progress), 10, SSD1306_WHITE);
     }
 
     // --- DEBUG Bar ---

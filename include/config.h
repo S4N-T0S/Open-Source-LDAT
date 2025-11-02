@@ -48,10 +48,11 @@ const int SENSOR_FLUCTUATION_THRESHOLD = 35; // Max allowed change during stabil
 
 // --- Behavior Settings ---
 const unsigned long BUTTON_HOLD_START_MS = 250; // Time in ms to start showing hold action
-const unsigned long BUTTON_HOLD_DURATION_MS = 750; // Time in ms to hold button for SELECT
-const unsigned long BUTTON_DEBUG_DURATION_MS = 1250; // Time in ms to hold button for DEBUG
-const unsigned long BUTTON_RESET_DURATION_MS = 1750; // Time in ms to hold for a global RESET
+const unsigned long BUTTON_HOLD_DURATION_MS = 800; // Time in ms to hold button for SELECT
+const unsigned long BUTTON_DEBUG_DURATION_MS = 1300; // Time in ms to hold button for DEBUG
+const unsigned long BUTTON_RESET_DURATION_MS = 1800; // Time in ms to hold for a global RESET
 const unsigned long FLUC_CHECK_DURATION_MS = 1500; // Duration to check sensor/mouse stability
+const unsigned long MEASUREMENT_TIMEOUT_MICROS = 1000000; // Max time (us) to wait for light change before failing a run. (1 second)
 
 // --- Display Configuration --- I2C pins for the OLED display (Wire) = Teensy 4.1 default I2C pins are 18 (SDA) and 19 (SCL)
 const int SCREEN_WIDTH = 128; // OLED display width, in pixels
