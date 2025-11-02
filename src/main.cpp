@@ -7,6 +7,8 @@
 #include <elapsedMillis.h>
 #include <Entropy.h>
 #include <ADC.h> // Teensy-specific ADC library for high-speed analog reads
+#include <SD.h>
+#include <vector>
 #include "../include/config.h"
 
 // --- Global Objects ---
@@ -65,11 +67,22 @@ LatencyStats statsWtoB;         // Stats for Auto UE4 White-to-Black
 LatencyStats statsDirectBtoW;   // Stats for Direct UE4 Black-to-White
 LatencyStats statsDirectWtoB;   // Stats for Direct UE4 White-to-Black
 
+// --- Latency Data Storage for SD Logging ---
+std::vector<float> latenciesAuto;
+std::vector<float> latenciesBtoW;
+std::vector<float> latenciesWtoB;
+std::vector<float> latenciesDirectBtoW;
+std::vector<float> latenciesDirectWtoB;
+
 // --- UE4 Mode State ---
 // This tracks whether the next measurement should be Black-to-White or White-to-Black
 bool ue4_isWaitingForWhite = true;
 bool isFirstUe4Run = true;
 bool mouseIsOk = false;
+
+// --- SD Card State ---
+bool sdCardPresent = false;
+bool dataHasBeenSaved = false;
 
 // --- Polling Test Variables ---
 const int CIRCLE_RADIUS = 100;
@@ -81,7 +94,7 @@ int polltest_last_y = 0;
 
 // --- Forward Declarations ---
 void updateDisplay();
-void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk);
+void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk, bool sdOk);
 void drawMenuScreen();
 void drawRunLimitMenuScreen();
 void drawDebugMenuScreen();
@@ -93,7 +106,7 @@ void drawMouseDebugScreen();
 void drawLightSensorDebugScreen();
 void drawPollingTestScreen();
 void enterErrorState(const char* errorMessage);
-void updateStats(LatencyStats& stats, unsigned long latencyMicros);
+void updateStats(LatencyStats& stats, std::vector<float>& latencies, unsigned long latencyMicros);
 int fastAnalogRead(uint8_t pin);
 void drawSyncScreen(const char* message, int y = 32);
 SyncResult performSmartSync(bool isDirectMode);
@@ -101,6 +114,7 @@ void centerText(const char* text, int y = -1);
 bool delayWithJitterAndAbortCheck(unsigned long baseDelayMs);
 bool performMouseCheck();
 void displayErrorScreen(const char* title, const char* line1, const char* line2, const char* line3, unsigned long delayMs = 3500);
+void saveDataToSD(State mode, unsigned long run_limit, bool is_partial_save);
 
 // --- Component Check Functions ---
 bool performMouseCheck() {
@@ -169,6 +183,17 @@ void setup() {
     adc->adc1->setConversionSpeed(ADC_CONVERSION_SPEED::VERY_HIGH_SPEED);
     adc->adc1->setSamplingSpeed(ADC_SAMPLING_SPEED::VERY_HIGH_SPEED);
 
+    // --- SD Card Initialization ---
+    if (ENABLE_SD_LOGGING) {
+        if (SD.begin(BUILTIN_SDCARD)) {
+            sdCardPresent = true;
+            // Create the directory if it doesn't exist
+            if (!SD.exists(SD_LOG_DIRECTORY)) {
+                SD.mkdir(SD_LOG_DIRECTORY);
+            }
+        }
+    }
+
     // --- Component Checks ---
     bool monitorOk = true; // If we're here, monitor is working
 
@@ -188,7 +213,7 @@ void setup() {
     mouseIsOk = performMouseCheck();
 
     // Display the setup screen once, so user sees the status
-    drawSetupScreen(monitorOk, sensorOk, mouseIsOk);
+    drawSetupScreen(monitorOk, sensorOk, mouseIsOk, sdCardPresent);
 
     // Now handle errors, directing to debug screens if necessary
     if (!sensorOk) {
@@ -242,7 +267,7 @@ void setup() {
             }
 
             // While waiting for a valid hold/release, keep showing the screen.
-            drawSetupScreen(monitorOk, sensorOk, mouseIsOk);
+            drawSetupScreen(monitorOk, sensorOk, mouseIsOk, sdCardPresent);
         }
     }
 }
@@ -397,19 +422,23 @@ void loop() {
                         }
 
                         if (shouldStartMode) {
-                            // Reset stats for the selected mode before starting a new test session
+                            dataHasBeenSaved = false; // Reset save flag for the new run
+                            // Reset stats and data vectors for the selected mode before starting
                             if (selectedMode == State::AUTO_MODE) {
                                 statsAuto = LatencyStats();
+                                if (ENABLE_SD_LOGGING) latenciesAuto.clear();
                             } else if (selectedMode == State::AUTO_UE4_APERTURE) {
                                 ue4_isWaitingForWhite = true; // Reset sub-state
                                 isFirstUe4Run = true;
                                 statsBtoW = LatencyStats();   // Clear stats
                                 statsWtoB = LatencyStats();
+                                if (ENABLE_SD_LOGGING) { latenciesBtoW.clear(); latenciesWtoB.clear(); }
                             } else if (selectedMode == State::DIRECT_UE4_APERTURE) {
                                  ue4_isWaitingForWhite = true; // Reset sub-state
                                 isFirstUe4Run = true;
                                 statsDirectBtoW = LatencyStats(); // Clear stats
                                 statsDirectWtoB = LatencyStats();
+                                if (ENABLE_SD_LOGGING) { latenciesDirectBtoW.clear(); latenciesDirectWtoB.clear(); }
                             }
                             currentState = selectedMode; // Finally, start the analysis mode
                         }
@@ -452,6 +481,11 @@ void loop() {
             if (maxRuns > 0 && statsAuto.runCount >= maxRuns) {
                 currentState = State::RUNS_COMPLETE;
                 break;
+            }
+
+            // Check for periodic save in unlimited mode
+            if (maxRuns == 0 && statsAuto.runCount > 0 && (statsAuto.runCount % UNLIMITED_MODE_SAVE_INTERVAL == 0)) {
+                saveDataToSD(currentState, 0, true);
             }
 
             bool timeoutOccurred = false;
@@ -522,7 +556,7 @@ void loop() {
             // Only update stats if the measurement was successful (no timeout).
             if (!timeoutOccurred) {
                 unsigned long latencyMicros = latencyTimer;
-                updateStats(statsAuto, latencyMicros);
+                updateStats(statsAuto, latenciesAuto, latencyMicros);
             }
 
             if (delayWithJitterAndAbortCheck(AUTO_MODE_RUN_DELAY_MS)) {
@@ -536,6 +570,11 @@ void loop() {
             if (maxRuns > 0 && statsBtoW.runCount >= maxRuns) {
                 currentState = State::RUNS_COMPLETE;
                 break;
+            }
+            
+            // Check for periodic save in unlimited mode
+            if (maxRuns == 0 && statsBtoW.runCount > 0 && (statsBtoW.runCount % UNLIMITED_MODE_SAVE_INTERVAL == 0)) {
+                saveDataToSD(currentState, 0, true);
             }
 
             // MODIFIED: On the first run, perform sync AND a warm-up cycle.
@@ -602,7 +641,7 @@ void loop() {
                     if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
                 if (!timeoutOccurred) {
-                    updateStats(statsBtoW, latencyTimer);
+                    updateStats(statsBtoW, latenciesBtoW, latencyTimer);
                     ue4_isWaitingForWhite = false;
                 }
             } else {
@@ -614,7 +653,7 @@ void loop() {
                     if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
                 if (!timeoutOccurred) {
-                    updateStats(statsWtoB, latencyTimer);
+                    updateStats(statsWtoB, latenciesWtoB, latencyTimer);
                     ue4_isWaitingForWhite = true;
                 }
             }
@@ -628,6 +667,11 @@ void loop() {
             if (maxRuns > 0 && statsDirectBtoW.runCount >= maxRuns) {
                 currentState = State::RUNS_COMPLETE;
                 break;
+            }
+
+            // Check for periodic save in unlimited mode
+            if (maxRuns == 0 && statsDirectBtoW.runCount > 0 && (statsDirectBtoW.runCount % UNLIMITED_MODE_SAVE_INTERVAL == 0)) {
+                saveDataToSD(currentState, 0, true);
             }
 
             // On the first run, perform sync AND a warm-up cycle.
@@ -688,7 +732,7 @@ void loop() {
                     if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
                 if (!timeoutOccurred) {
-                    updateStats(statsDirectBtoW, latencyTimer);
+                    updateStats(statsDirectBtoW, latenciesDirectBtoW, latencyTimer);
                     ue4_isWaitingForWhite = false;
                 }
             } else {
@@ -698,7 +742,7 @@ void loop() {
                     if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) { timeoutOccurred = true; break; }
                 }
                 if (!timeoutOccurred) {
-                    updateStats(statsDirectWtoB, latencyTimer);
+                    updateStats(statsDirectWtoB, latenciesDirectWtoB, latencyTimer);
                     ue4_isWaitingForWhite = true;
                 }
             }
@@ -743,6 +787,13 @@ void loop() {
         }
         case State::RUNS_COMPLETE:
             // This is a halt state. The display will freeze on the final statistics.
+            
+            // Save data on completion of a limited run. This runs only once.
+            if (!dataHasBeenSaved && maxRuns > 0) {
+                saveDataToSD(selectedMode, maxRuns, false);
+                dataHasBeenSaved = true;
+            }
+
             // Check for a hold action to allow user to exit.
             if (debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
                 previousState = currentState;
@@ -866,6 +917,104 @@ SyncResult performSmartSync(bool isDirectMode) {
     return SyncResult::FAILED;
 }
 
+// --- SD Card Functions ---
+
+// Helper to get a string representation of the current mode for filenames
+String getModeString(State mode) {
+    if (mode == State::AUTO_MODE) return "AUTO";
+    if (mode == State::AUTO_UE4_APERTURE) return "AUTO_UE4";
+    if (mode == State::DIRECT_UE4_APERTURE) return "DIRECT_UE4";
+    return "UNKNOWN";
+}
+
+// Finds the next available file number for a given base name to prevent overwriting files.
+int getNextFileNumber(const String& path, const String& baseName) {
+    int fileNumber = 1;
+    while (true) {
+        // Using String objects for path manipulation is safer
+        String fileName = path + "/" + baseName + "_" + String(fileNumber) + ".csv";
+        if (!SD.exists(fileName.c_str())) { // FIX: Use .c_str() for SD library functions
+            return fileNumber;
+        }
+        fileNumber++;
+        if (fileNumber > 9999) return -1; // Safety break
+    }
+}
+
+// Writes the collected latency data to a specified file.
+void writeLogFile(const String& filePath, const std::vector<float>& latencies1, const std::vector<float>& latencies2 = {}) {
+    File dataFile = SD.open(filePath.c_str(), FILE_WRITE); // FIX: Use .c_str() for SD library functions
+    if (dataFile) {
+        if (latencies2.empty()) { // Single column log for AUTO mode
+            dataFile.println("Latency (ms)");
+            for (const auto& latency : latencies1) {
+                dataFile.println(latency, 4); // Print with 4 decimal places
+            }
+        } else { // Dual column log for UE4 modes
+            dataFile.println("B-to-W (ms),W-to-B (ms)");
+            size_t maxRows = max(latencies1.size(), latencies2.size());
+            for (size_t i = 0; i < maxRows; ++i) {
+                if (i < latencies1.size()) {
+                    dataFile.print(latencies1[i], 4);
+                }
+                dataFile.print(",");
+                if (i < latencies2.size()) {
+                    dataFile.print(latencies2[i], 4);
+                }
+                dataFile.println();
+            }
+        }
+        dataFile.close();
+    }
+}
+
+// Main function to handle the logic of saving data to the SD card.
+void saveDataToSD(State mode, unsigned long run_limit, bool is_partial_save) {
+    if (!sdCardPresent || !ENABLE_SD_LOGGING) return;
+
+    String modeStr = getModeString(mode);
+    String baseFileName;
+    if (run_limit > 0) {
+        baseFileName = modeStr + "_" + String(run_limit) + "runs";
+    } else {
+        baseFileName = modeStr + "_UNLIMITED_part";
+    }
+
+    int fileNum = getNextFileNumber(SD_LOG_DIRECTORY, baseFileName);
+    if (fileNum == -1) {
+        displayErrorScreen("SD CARD ERROR", "Could not find", "a free file name.", "Aborting save...");
+        return;
+    }
+    String filePath = String(SD_LOG_DIRECTORY) + "/" + baseFileName + "_" + String(fileNum) + ".csv";
+
+    // Show "Saving..." message on screen
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    centerText("SAVING LOG...", 16);
+    // Display a truncated version of the path if it's too long
+    String displayPath = filePath;
+    if (displayPath.length() > 21) {
+        displayPath = "..." + displayPath.substring(displayPath.length() - 18);
+    }
+    centerText(displayPath.c_str(), 32);
+    display.display();
+
+    // Write the actual file
+    if (mode == State::AUTO_MODE) {
+        writeLogFile(filePath, latenciesAuto);
+        if (is_partial_save) latenciesAuto.clear();
+    } else if (mode == State::AUTO_UE4_APERTURE) {
+        writeLogFile(filePath, latenciesBtoW, latenciesWtoB);
+        if (is_partial_save) { latenciesBtoW.clear(); latenciesWtoB.clear(); }
+    } else if (mode == State::DIRECT_UE4_APERTURE) {
+        writeLogFile(filePath, latenciesDirectBtoW, latenciesDirectWtoB);
+        if (is_partial_save) { latenciesDirectBtoW.clear(); latenciesDirectWtoB.clear(); }
+    }
+
+    delay(1000); // Let user see the save message before continuing
+}
+
 // --- Optimized Analog Read ---
 // Wrapper for the ADC library to perform a faster analog read using our pre-configured settings.
 // Marked 'FASTRUN' to be placed in ITCM for maximum speed, as it's called repeatedly inside measurement loops.
@@ -874,8 +1023,13 @@ FASTRUN int fastAnalogRead(uint8_t pin) {
 }
 
 // --- Helper function to centralize statistics calculations ---
-void updateStats(LatencyStats& stats, unsigned long latencyMicros) {
+void updateStats(LatencyStats& stats, std::vector<float>& latencies, unsigned long latencyMicros) {
     float latencyMillis = latencyMicros / 1000.0f;
+
+    // Store raw value for logging if enabled
+    if (ENABLE_SD_LOGGING && sdCardPresent) {
+        latencies.push_back(latencyMillis);
+    }
 
     // Update the provided stats struct
     stats.runCount++;
@@ -961,30 +1115,63 @@ void updateDisplay() {
     display.display();
 }
 
-void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk) {
+// --- Icon Bitmaps ---
+// 8x8 checkmark icon for 'OK' status
+static const unsigned char PROGMEM check_bmp[] = {
+    B00000000, B00000001, B00000011, B00100110, B00110100, B00010000, B00000000, B00000000
+};
+
+// 8x8 X icon for 'FAIL' status
+static const unsigned char PROGMEM x_bmp[] = {
+    B00100010, B00010100, B00001000, B00001000, B00010100, B00100010, B00000000, B00000000
+};
+
+// 8x8 dash icon for 'Disabled' status
+static const unsigned char PROGMEM dash_bmp[] = {
+    B00000000, B00000000, B00000000, B00111100, B00000000, B00000000, B00000000, B00000000
+};
+
+// --- Setup Screen Layout ---
+void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk, bool sdOk) {
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    centerText("SETUP MODE", 0);
-    display.drawLine(0, 8, SCREEN_WIDTH-1, 8, SSD1306_WHITE);
+    centerText("SYSTEM CHECK", 0);
+    display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
-    display.setCursor(10, 10);
-    display.print("Monitor: ");
-    display.println(monitorOk ? "Working" : "Not Detected");
+    const int col1_x = 5;
+    const int col2_x = 70;
+    const int row1_y = 12;
+    const int row2_y = 24;
+    const int icon_offset_x = 45;
 
-    display.setCursor(10, 20);
-    display.print("Sensor: ");
-    display.println(sensorOk ? "Stable" : "Unstable");
+    // Monitor
+    display.setCursor(col1_x, row1_y);
+    display.print("Monitor");
+    display.drawBitmap(col1_x + icon_offset_x, row1_y, monitorOk ? check_bmp : x_bmp, 8, 8, SSD1306_WHITE);
 
-    display.setCursor(10, 30);
-    display.print("Mouse: ");
-    display.println(mouseOk ? "Detected" : "Not Detected");
+    // Mouse
+    display.setCursor(col2_x, row1_y);
+    display.print("Mouse");
+    display.drawBitmap(col2_x + icon_offset_x, row1_y, mouseOk ? check_bmp : x_bmp, 8, 8, SSD1306_WHITE);
 
-    if (monitorOk && sensorOk && mouseOk) {
-        display.drawLine(0, 38, SCREEN_WIDTH-1, 38, SSD1306_WHITE);
-        display.setCursor(20, 42);
-        display.println("Hold Button Now");
+    // Sensor
+    display.setCursor(col1_x, row2_y);
+    display.print("Sensor");
+    display.drawBitmap(col1_x + icon_offset_x, row2_y, sensorOk ? check_bmp : x_bmp, 8, 8, SSD1306_WHITE);
+
+    // SD Card
+    display.setCursor(col2_x, row2_y);
+    display.print("SD Card");
+    if (ENABLE_SD_LOGGING) {
+        display.drawBitmap(col2_x + icon_offset_x, row2_y, sdOk ? check_bmp : x_bmp, 8, 8, SSD1306_WHITE);
+    } else {
+        display.drawBitmap(col2_x + icon_offset_x, row2_y, dash_bmp, 8, 8, SSD1306_WHITE);
     }
+    
+    // if (monitorOk && sensorOk && mouseOk) { Removed cus redundant.
+    display.drawLine(0, 35, SCREEN_WIDTH - 1, 35, SSD1306_WHITE);
+    centerText("Hold Button to Start", 42);
 
     // Footer
     centerText(GITHUB_TAG, 56);

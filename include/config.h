@@ -69,3 +69,9 @@ const int MODE_DELAY_JITTER_MS = 10;
 const unsigned long RUN_LIMIT_OPTION_1 = 100;
 const unsigned long RUN_LIMIT_OPTION_2 = 300;
 const unsigned long RUN_LIMIT_OPTION_3 = 500;
+
+// --- SD Card Logging ---
+// Saves latency results on run completion. SD card must be FAT32 formatted.
+const bool ENABLE_SD_LOGGING = false; // Set to true to enable logging to SD card
+const char* SD_LOG_DIRECTORY = "/latency_logs"; // Directory to store log files. Must start with a '/'.
+const int UNLIMITED_MODE_SAVE_INTERVAL = 50; // How often to save logs in unlimited mode (in runs)

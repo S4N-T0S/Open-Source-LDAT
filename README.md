@@ -17,6 +17,7 @@ While the firmware behaves as a standard HID mouse, any unrecognized custom devi
 *   **Multiple Testing Modes:** Includes a general-purpose automatic mode and specialized modes for use with controlled testing software.
 *   **True 8kHz Polling:** A custom build script temporarily patches the Teensy core to enable a true 8000 Hz USB polling rate for maximum accuracy in Direct Mode.
 *   **On-Device Stats:** The OLED screen displays live latency data, including the last, average, minimum, and maximum measurements, plus a run counter.
+*   **SD Card Data Logging:** Automatically save every latency measurement from a test session to a `.csv` file on a microSD card.
 *   **Hardware Diagnostics:** A comprehensive self-check runs on boot to verify all components are functioning correctly.
 *   **Simple One-Button UI:** A clever, multi-level hold system allows for full device control with just a single push button.
 
@@ -63,6 +64,8 @@ Before compiling, you **must** customize the `include/config.h` file. This is th
     *   `MOUSE_CLICK_HOLD_MICROS`: This value dictates how long the click signal is held in UE4 modes. Tune it based on your system's polling rate to ensure clicks are reliably detected. The comments in the file provide safe starting points.
 4.  **Run Limits:**
     *   `RUN_LIMIT_OPTION_1`, `_2`, `_3`: These variables set the run count options available in the "Select Run Limit" menu. You can change `100`, `300`, `500` to any values you prefer (e.g., `50`, `150`, `1000`).
+5.  **SD Card Logging (Optional):**
+    > The device can automatically log all latency runs to a microSD card. This feature is **disabled by default**. To enable it, set `ENABLE_SD_LOGGING` to `true`. You can also customize the save directory and the logging interval for 'Unlimited' mode runs in this section.
 
 ### Step 2: Compile and Upload
 
@@ -92,7 +95,7 @@ These tools provide a standardized, high-contrast square that changes color on a
         *   **Confirm:** Ensure `EnableFrameColorBar` is `1` and `FrameColorBarMode` is `5`.
 
     > [!WARNING]
-    > **Important Note on RTSS Accuracy:** As RTSS is an overlay, its readings may differ from in-engine tools. Crucially, **do not use RTSS with Frame Generation technologies** (e.g., DLSS 3, FSR 3), as this will produce inaccurate results. For a detailed explanation, please see the *Notes on Software Markers (RTSS)* section at the bottom of this document.
+    > **Important Note on RTSS Accuracy:** As RTSS is an overlay, its readings may differ from in-engine tools. Crucially, **do not use RTSS with Frame Generation technologies** (e.g., DLSS 3, FSR 3), as this will produce inaccurate results. For a detailed explanation, please see the [*Notes on Software Markers (RTSS)*](?tab=readme-ov-file#notes-on-software-markers-rtss) section at the bottom of this document.
 
 ### Method 2: Using In-Game Visuals (Universal)
 
