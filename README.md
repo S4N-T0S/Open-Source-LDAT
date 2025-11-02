@@ -73,26 +73,39 @@ Before compiling, you **must** customize the `include/config.h` file. This is th
 ---
 ## Test Environment Setup (Choosing a Latency Marker)
 
-To measure latency in games, you need an on-screen visual indicator that responds to your clicks. Your choice of tool depends on your graphics card.
+To measure latency, the device needs a reliable on-screen visual event (a "latency marker") that appears in direct response to a mouse click. You can use dedicated software tools or even in-game visual effects like a muzzle flash.
 
-### For NVIDIA Users (Recommended)
+### Method 1: Dedicated Software Markers
 
-The best method is to use the **NVIDIA Reflex Latency Flash Indicator**, which is supported by many competitive games. This feature must be enabled within the game's graphics settings.
+These tools provide a standardized, high-contrast square that changes color on a click, offering the most reliable and repeatable measurements.
 
-For games that don't offer a menu option, a `.bat` script that can force the setting on or off is included in the `/scripts` folder of this project, thanks to GitHub user [@fr33thyfr33thy](https://github.com/fr33thyfr33thy).
+*   **For NVIDIA Users: Reflex Flash Indicator**
+    The best method is to use the **NVIDIA Reflex Latency Flash Indicator**, supported by many competitive games. Enable it in the game's graphics settings. For games that don't offer a menu option, a `.bat` script to force the setting is included in the `/scripts` folder of this project, thanks to GitHub user [@fr33thyfr33thy](https://github.com/fr33thyfr33thy).
 
-### For AMD & All Other Users
+*   **For AMD & All Other Users: RTSS Latency Marker**
+    A "okay" alternative is the **RTSS FCAT Latency Marker**.
+    1.  **Download and install RivaTuner Statistics Server (RTSS)** from the official [Guru3D website](https://www.guru3d.com/download/rtss-rivatuner-statistics-server-download/).
+    2.  Open RTSS, click **Setup**, find "Enable frame color indicator," tick it, and select **"Latency marker"** from the dropdown.
+    3.  A black square that turns white on click will now appear. You can customize its size and position by editing the `Global` profile file located at `C:\Program Files (x86)\RivaTuner Statistics Server\Profiles`.
+        *   **Size:** Set `FrameColorBarWidth` to `128` (or larger).
+        *   **Position:** Ensure `FrameColorBarPos` is `8` (bottom right).
+        *   **Confirm:** Ensure `EnableFrameColorBar` is `1` and `FrameColorBarMode` is `5`.
 
-Your best option is to use the **RTSS FCAT Latency Marker**.
+    > [!WARNING]
+    > **Important Note on RTSS Accuracy:** As RTSS is an overlay, its readings may differ from in-engine tools. Crucially, **do not use RTSS with Frame Generation technologies** (e.g., DLSS 3, FSR 3), as this will produce inaccurate results. For a detailed explanation, please see the *Notes on Software Markers (RTSS)* section at the bottom of this document.
 
-1.  **Download and install RivaTuner Statistics Server (RTSS)** from the official [Guru3D website](https://www.guru3d.com/download/rtss-rivatuner-statistics-server-download/).
-2.  Open RTSS and click the **Setup** button in the bottom-left.
-3.  Find the "Enable frame color indicator" option, tick it and select **"Latency marker"** from the dropdown menu.
-4.  A black square will now appear in your game, which turns white when you click. To customize it, you can edit the `Global` profile file located at:
-    `C:\Program Files (x86)\RivaTuner Statistics Server\Profiles`
-    *   **Size:** Change `FrameColorBarWidth` to a larger value (e.g., `128`).
-    *   **Position:** Change `FrameColorBarPos` to `8` to place it in the bottom right, which is ideal for how displays typically render frames.
-    *   **Confirm settings:** Ensure `EnableFrameColorBar` is `1` and `FrameColorBarMode` is `5`.
+### Method 2: Using In-Game Visuals (Universal)
+
+You can measure latency in **any game** by using an in-game visual effect, such as a **muzzle flash**, as your latency marker. This universal method requires some initial tuning but is extremely powerful.
+
+1.  **Find a suitable spot in your game**, ideally a dark area where the muzzle flash provides a strong contrast.
+2.  **Enter the Debug Menu** on your Teensy by holding the external button for ~1.3 seconds, then select **LSensor Debug**.
+3.  Place the sensor on your monitor over the area where the flash will appear. The OLED will show a live reading of the light level.
+4.  Fire your weapon and observe the peak sensor value when the muzzle flash occurs.
+5.  Open the `include/config.h` file and set the `LIGHT_SENSOR_THRESHOLD` to a value that is higher than the dark background but lower than the peak muzzle flash reading (and vice versa to `DARK_SENSOR_THRESHOLD`). This ensures the timer stops only when the flash is detected.
+6.  Compile and upload the firmware with your new threshold. The device is now calibrated to use the muzzle flash as its trigger.
+
+This technique allows you to measure latency in situations where dedicated markers are not available, giving you true end-to-end results based on the game engine's actual rendered output.
 
 ---
 
