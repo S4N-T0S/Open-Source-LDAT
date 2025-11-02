@@ -56,6 +56,8 @@ Before compiling, you **must** customize the `include/config.h` file. This is th
     *   `MOUSE_PRESENCE_MIN_ADC_VALUE` / `MOUSE_STABILITY_THRESHOLD_ADC`: These values confirm a mouse is connected. Use the **Mouse Debug** mode to see the live reading and adjust if needed.
 3.  **Click Timing:**
     *   `MOUSE_CLICK_HOLD_MICROS`: This value dictates how long the click signal is held in UE4 modes. Tune it based on your system's polling rate to ensure clicks are reliably detected. The comments in the file provide safe starting points.
+4.  **Run Limits:**
+    *   `RUN_LIMIT_OPTION_1`, `_2`, `_3`: These variables set the run count options available in the "Select Run Limit" menu. You can change `100`, `300`, `500` to any values you prefer (e.g., `50`, `150`, `1000`).
 
 ### Step 2: Compile and Upload
 
@@ -131,11 +133,9 @@ Measures the entire latency pipeline, from USB input to photon output.
 
 ## Verifying Your Polling Rate
 
-To confirm the 8kHz patch is working correctly for Direct Mode:
-1.  Open `polling_tester.cpp` and copy its contents into `main.cpp`, replacing everything.
-2.  Upload the new code to your Teensy. It will now act as a mouse moving in a circle.
-3.  Use a utility like **[HamsterWheel Mouse Tester](https://github.com/szabodanika/HamsterWheel/releases/tag/0.4)** to verify a stable polling rate of ~8000 Hz.
-4.  Once done, restore the original code to `main.cpp` and re-upload.
+To verify the Teensy is running at a 8kHz polling rate, use the integrated tester. Hold the button for ~1.25 seconds to enter the **Debug Menu**, then select **Polling Test**. The device will begin moving your mouse cursor in a circle. Use a PC utility like **[HamsterWheel Mouse Tester](https://github.com/szabodanika/HamsterWheel/releases/tag/0.4)** to confirm a stable ~8000 Hz rate.
+
+A single short press stops the test and returns you to the debug menu.
 
 ---
 ## A Note on Measurement Accuracy

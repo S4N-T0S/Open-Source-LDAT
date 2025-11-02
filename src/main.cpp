@@ -28,7 +28,8 @@ enum class State {
     RUNS_COMPLETE,
     ERROR_HALT,
     DEBUG_MOUSE,
-    DEBUG_LSENSOR
+    DEBUG_LSENSOR,
+    DEBUG_POLLING_TEST
 };
 State currentState = State::SETUP;
 State previousState = State::SETUP;
@@ -40,7 +41,7 @@ const int menuOptionCount = 3;
 int runLimitMenuSelection = 0;
 const int runLimitMenuOptionCount = 4;
 int debugMenuSelection = 0;
-const int debugMenuOptionCount = 2;
+const int debugMenuOptionCount = 3;
 unsigned long maxRuns = 0;
 
 // --- Statistics ---
@@ -62,6 +63,14 @@ LatencyStats statsDirectWtoB;   // Stats for Direct UE4 White-to-Black
 bool ue4_isWaitingForWhite = true;
 bool isFirstUe4Run = true;
 
+// --- Polling Test Variables ---
+const int CIRCLE_RADIUS = 100;
+const float ANGLE_STEP = 0.08f;
+float polltest_angle = 0.0f;
+int polltest_last_x = 0;
+int polltest_last_y = 0;
+
+
 // --- Forward Declarations ---
 void updateDisplay();
 void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk);
@@ -74,12 +83,13 @@ void drawAutoModeStats();
 void drawUe4StatsScreen(const char* title, const LatencyStats& b_to_w_stats, const LatencyStats& w_to_b_stats);
 void drawMouseDebugScreen();
 void drawLightSensorDebugScreen();
+void drawPollingTestScreen();
 void enterErrorState(const char* errorMessage);
 void updateStats(LatencyStats& stats, unsigned long latencyMicros);
 int fastAnalogRead(uint8_t pin);
 void drawSyncScreen(const char* message, int y = 32);
 bool performSmartSync(bool isDirectMode);
-void centerText(const char* text, int y);
+void centerText(const char* text, int y = -1);
 void delayWithJitter(unsigned long baseDelayMs);
 
 // --- Setup Function ---
@@ -90,7 +100,7 @@ void setup() {
     // Seed the software pseudo-random generator with a true random number.
     randomSeed(Entropy.random());
 
-    // Initialize USB Mouse functionality. (Only used for direct)
+    // Initialize USB Mouse functionality.
     Mouse.begin();
 
     // Set the click pin to output mode. The pinMode function is sufficient to
@@ -306,14 +316,14 @@ void loop() {
                     }
                     else if (previousState == State::SELECT_RUN_LIMIT) {
                         // User selected a run limit. Set it and prepare to start the mode.
-                        if (runLimitMenuSelection == 0) maxRuns = 100;
-                        else if (runLimitMenuSelection == 1) maxRuns = 300;
-                        else if (runLimitMenuSelection == 2) maxRuns = 500;
+                        if (runLimitMenuSelection == 0) maxRuns = RUN_LIMIT_OPTION_1;
+                        else if (runLimitMenuSelection == 1) maxRuns = RUN_LIMIT_OPTION_2;
+                        else if (runLimitMenuSelection == 2) maxRuns = RUN_LIMIT_OPTION_3;
                         else maxRuns = 0; // 0 represents unlimited
 
-                        bool shouldStartMode = true; // Assume we will start unless the Direct check fails.
+                        bool shouldStartMode = true; // Assume we will start unless a check fails.
 
-                        // --- Check for Direct modes ---
+                        // --- Check for modes requiring a PC connection ---
                         if (selectedMode == State::DIRECT_UE4_APERTURE) {
                             if (usb_configuration == 0) {
                                 shouldStartMode = false; // Veto the mode start.
@@ -357,8 +367,36 @@ void loop() {
                         // User selected an option from the debug menu.
                         if (debugMenuSelection == 0) {
                             currentState = State::DEBUG_MOUSE;
-                        } else {
+                        } else if (debugMenuSelection == 1) {
                             currentState = State::DEBUG_LSENSOR;
+                        } else { // debugMenuSelection == 2
+                             if (usb_configuration == 0) {
+                                // Display error message if not connected to a PC.
+                                display.clearDisplay();
+                                display.setTextSize(1);
+                                display.setTextColor(SSD1306_WHITE);
+                                centerText("CONNECTION ERROR", 0);
+                                display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
+                                centerText("Polling Test requires", 20);
+                                centerText("a PC connection.", 32);
+                                centerText("Returning...", 48);
+                                display.display();
+                                delay(3500);
+                                currentState = State::SELECT_DEBUG_MENU; // Go back
+                            } else {
+                                // Draw the polling screen ONCE before entering the high-speed loop.
+                                display.clearDisplay();
+                                display.setTextSize(1);
+                                display.setTextColor(SSD1306_WHITE);
+                                drawPollingTestScreen();
+                                display.display();
+
+                                // Reset polling test variables before starting.
+                                polltest_angle = 0.0f;
+                                polltest_last_x = 0;
+                                polltest_last_y = 0;
+                                currentState = State::DEBUG_POLLING_TEST;
+                            }
                         }
                     }
                 }
@@ -599,6 +637,38 @@ void loop() {
             delayWithJitter(UE4_MODE_RUN_DELAY_MS);
             break;
         }
+        case State::DEBUG_POLLING_TEST: {
+            // Check for the exit condition: a button click.
+            if (debouncer.rose()) {
+                currentState = State::SELECT_DEBUG_MENU;
+                break;
+            }
+
+            // Calculate the new desired cursor position on a circle.
+            int current_x = (int)(CIRCLE_RADIUS * cos(polltest_angle));
+            int current_y = (int)(CIRCLE_RADIUS * sin(polltest_angle));
+
+            // Calculate the delta (change) from the last position.
+            int dx = current_x - polltest_last_x;
+            int dy = current_y - polltest_last_y;
+
+            // We call usb_mouse_move() on EVERY loop iteration, without checking if
+            // movement occurred. This is the key to achieving a true 8kHz polling rate.
+            usb_mouse_move(dx, dy, 0, 0);
+
+            // Store the current position to calculate the next delta.
+            polltest_last_x = current_x;
+            polltest_last_y = current_y;
+
+            // Increment the angle for the next point on the circle.
+            polltest_angle += ANGLE_STEP;
+
+            // Wrap the angle around to prevent it from losing precision.
+            if (polltest_angle > TWO_PI) {
+                polltest_angle -= TWO_PI;
+            }
+            break;
+        }
         case State::RUNS_COMPLETE:
             // This is a halt state. No actions are performed.
             // The display will freeze on the final statistics from the last run.
@@ -607,8 +677,12 @@ void loop() {
         case State::ERROR_HALT:
             return; // Halt program for critical errors
     }
-    // Update the display in every loop cycle for all active states
-    updateDisplay();
+
+    // Update the display for all states EXCEPT the polling test, which handles
+    // its own display on state entry to allow the loop to run at maximum speed.
+    if (currentState != State::DEBUG_POLLING_TEST) {
+        updateDisplay();
+    }
 }
 
 // Helper function to add random jitter to delays between measurement runs.
@@ -729,7 +803,7 @@ void updateStats(LatencyStats& stats, unsigned long latencyMicros) {
 }
 
 // --- Helper function to center text on the display ---
-void centerText(const char* text, int y = -1) {
+void centerText(const char* text, int y) {
     int targetY;
 
     // Check if a Y coordinate was provided. If not, use the current one.
@@ -739,8 +813,10 @@ void centerText(const char* text, int y = -1) {
         targetY = y;
     }
 
-    int textWidth = strlen(text) * 6; // Using default font width of 6 pixels
-    int x = (SCREEN_WIDTH - textWidth) / 2;
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+    int x = (SCREEN_WIDTH - w) / 2;
     display.setCursor(max(0, x), targetY); // Use max(0, x) to prevent negative coordinates
     display.println(text);
 }
@@ -920,6 +996,17 @@ void drawLightSensorDebugScreen() {
     centerText(GITHUB_TAG, 56);
 }
 
+void drawPollingTestScreen() {
+    centerText("POLLING TEST", 0);
+    display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
+
+    centerText("Mouse moving...", 20);
+    centerText("Use HamsterWheel", 32);
+    centerText("Click button to exit.", 44);
+
+    centerText(GITHUB_TAG, 56);
+}
+
 // --- Generic menu drawing function to reduce code duplication ---
 void drawGenericMenu(const char* title, const char* const options[], int optionCount, int selection, bool includeFooter = true) {
     centerText(title, 0);
@@ -945,12 +1032,16 @@ void drawMenuScreen() {
 }
 
 void drawRunLimitMenuScreen() {
-    const char* const runLimitOptions[] = {"100 Runs", "300 Runs", "500 Runs", "Unlimited"};
+    char opt1[16], opt2[16], opt3[16];
+    sprintf(opt1, "%lu Runs", RUN_LIMIT_OPTION_1);
+    sprintf(opt2, "%lu Runs", RUN_LIMIT_OPTION_2);
+    sprintf(opt3, "%lu Runs", RUN_LIMIT_OPTION_3);
+    const char* const runLimitOptions[] = {opt1, opt2, opt3, "Unlimited"};
     drawGenericMenu("Select Run Limit", runLimitOptions, runLimitMenuOptionCount, runLimitMenuSelection, false);
 }
 
 void drawDebugMenuScreen() {
-    const char* const debugOptions[] = {"Mouse Debug", "LSensor Debug"};
+    const char* const debugOptions[] = {"Mouse Debug", "LSensor Debug", "Polling Test"};
     drawGenericMenu("Debug Menu", debugOptions, debugMenuOptionCount, debugMenuSelection);
 }
 

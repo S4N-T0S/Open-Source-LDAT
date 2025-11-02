@@ -34,7 +34,7 @@ const int MOUSE_STABILITY_THRESHOLD_ADC = 15;
 // At 500 Hz polling rate, each poll is 2000 microseconds... (4000 microseconds)
 // At 250 Hz polling rate, each poll is 4000 microseconds... (8000 microseconds)
 const int MOUSE_CLICK_HOLD_MICROS = 140;
-// ^ IMPORTANT: This delay is only for UE4 modes. Automatic mode holds down the click until the box turns white, then lets go.
+// ^ IMPORTANT: This delay is only for UE4 modes. Automatic mode holds down the click until it detects LIGHT_SENSOR_THRESHOLD, then lets go.
 
 const int PIN_LED_BUILTIN = 13; // Built-in LED for error indication
 
@@ -53,7 +53,6 @@ const unsigned long BUTTON_DEBUG_DURATION_MS = 1250; // Time in ms to hold butto
 const unsigned long BUTTON_RESET_DURATION_MS = 1750; // Time in ms to hold for a global RESET
 const unsigned long FLUC_CHECK_DURATION_MS = 1500; // Duration to check sensor/mouse stability
 
-
 // --- Display Configuration --- I2C pins for the OLED display (Wire) = Teensy 4.1 default I2C pins are 18 (SDA) and 19 (SCL)
 const int SCREEN_WIDTH = 128; // OLED display width, in pixels
 const int SCREEN_HEIGHT = 64; // OLED display height, in pixels
@@ -66,3 +65,9 @@ const char* GITHUB_TAG = "GitHub: S4N-T0S";
 const unsigned long AUTO_MODE_RUN_DELAY_MS = 750;
 const int MODE_DELAY_JITTER_MS = 10;
 const unsigned long UE4_MODE_RUN_DELAY_MS = 250;
+
+// --- Run Limit Configuration ---
+// These values populate the "Select Run Limit" menu.
+const unsigned long RUN_LIMIT_OPTION_1 = 100;
+const unsigned long RUN_LIMIT_OPTION_2 = 300;
+const unsigned long RUN_LIMIT_OPTION_3 = 500;
