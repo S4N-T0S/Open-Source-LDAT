@@ -42,6 +42,7 @@ enum class State {
     SELECT_DEBUG_MENU,
     HOLD_ACTION,
     AUTO_MODE,
+    DIRECT_AUTO_MODE,
     AUTO_UE4_APERTURE,
     DIRECT_UE4_APERTURE,
     RUNS_COMPLETE,
@@ -61,14 +62,35 @@ enum class SyncResult {
     HOLD_ABORT
 };
 
+// Enum for text alignment
+enum class TextAlign {
+    LEFT,
+    CENTER,
+    RIGHT
+};
+
+// Enum for the result of the auto mode measurement function
+enum class AutoMeasureResult {
+    SUCCESS,
+    TIMEOUT,
+    ABORT
+};
+
 // --- Menu Variables ---
 int menuSelection = 0;
-const int menuOptionCount = 3;
+const int menuOptionCount = 4;
 int runLimitMenuSelection = 0;
-const int runLimitMenuOptionCount = 4;
+const int runLimitMenuOptionCount = sizeof(RUN_LIMIT_OPTIONS) / sizeof(RUN_LIMIT_OPTIONS[0]) + 1;
 int debugMenuSelection = 0;
 const int debugMenuOptionCount = 3;
 unsigned long maxRuns = 0;
+// Scrolling Menu State
+const int MAX_MENU_ITEMS = 3;
+const int MAX_RUN_LIMIT_MENU_ITEMS = 4;
+int menuScrollOffset = 0;
+int runLimitMenuScrollOffset = 0;
+int debugMenuScrollOffset = 0;
+
 
 // --- Statistics ---
 struct LatencyStats {
@@ -79,6 +101,7 @@ struct LatencyStats {
     float maxLatency = 0.0;
 };
 LatencyStats statsAuto;         // Stats for the standard Automatic mode
+LatencyStats statsDirectAuto;   // Stats for the Direct Automatic mode
 LatencyStats statsBtoW;         // Stats for Auto UE4 Black-to-White
 LatencyStats statsWtoB;         // Stats for Auto UE4 White-to-Black
 LatencyStats statsDirectBtoW;   // Stats for Direct UE4 Black-to-White
@@ -86,6 +109,7 @@ LatencyStats statsDirectWtoB;   // Stats for Direct UE4 White-to-Black
 
 // --- Latency Data Storage for SD Logging ---
 std::vector<float> latenciesAuto;
+std::vector<float> latenciesDirectAuto;
 std::vector<float> latenciesBtoW;
 std::vector<float> latenciesWtoB;
 std::vector<float> latenciesDirectBtoW;
@@ -117,7 +141,7 @@ void drawRunLimitMenuScreen();
 void drawDebugMenuScreen();
 void drawHoldActionScreen();
 void drawOperationScreen();
-void drawAutoModeStats();
+void drawAutoModeStatsScreen(const char* title, const LatencyStats& stats);
 void drawUe4StatsScreen(const char* title, const LatencyStats& b_to_w_stats, const LatencyStats& w_to_b_stats);
 void drawMouseDebugScreen();
 void drawLightSensorDebugScreen();
@@ -127,11 +151,13 @@ void updateStats(LatencyStats& stats, std::vector<float>& latencies, unsigned lo
 int fastAnalogRead(uint8_t pin);
 void drawSyncScreen(const char* message, int y = 32);
 SyncResult performSmartSync(bool isDirectMode);
-void centerText(const char* text, int y = -1);
+AutoMeasureResult performAutoModeMeasurement(bool isDirectMode, unsigned long& outLatencyMicros);
+void alignText(const char* text, int y = -1, TextAlign align = TextAlign::CENTER);
 bool delayWithJitterAndAbortCheck(unsigned long baseDelayMs);
 bool performMouseCheck();
 void displayErrorScreen(const char* title, const char* line1, const char* line2, const char* line3, unsigned long delayMs = 3500);
 void saveDataToSD(State mode, unsigned long run_limit, bool is_partial_save);
+void updateScrollOffset(int selection, int& scrollOffset, int optionCount, int maxVisibleItems);
 
 // --- Component Check Functions ---
 bool performMouseCheck() {
@@ -271,6 +297,7 @@ void setup() {
                 // Priority 2: Check for DEBUG menu
                 else if (heldDuration > BUTTON_DEBUG_DURATION_MS) {
                     debugMenuSelection = 0;
+                    debugMenuScrollOffset = 0; // Reset scroll
                     currentState = State::SELECT_DEBUG_MENU;
                     break;
                 }
@@ -323,6 +350,7 @@ void loop() {
             // Act on button release (short press) to cycle menu
             if (debouncer.rose()) {
                 menuSelection = (menuSelection + 1) % menuOptionCount;
+                updateScrollOffset(menuSelection, menuScrollOffset, menuOptionCount, MAX_MENU_ITEMS);
             }
             break;
         case State::SELECT_RUN_LIMIT:
@@ -334,6 +362,7 @@ void loop() {
             // Act on button release (short press) to cycle run limit options
             if (debouncer.rose()) {
                 runLimitMenuSelection = (runLimitMenuSelection + 1) % runLimitMenuOptionCount;
+                updateScrollOffset(runLimitMenuSelection, runLimitMenuScrollOffset, runLimitMenuOptionCount, MAX_RUN_LIMIT_MENU_ITEMS);
             }
             break;
         case State::SELECT_DEBUG_MENU:
@@ -345,6 +374,7 @@ void loop() {
             // Act on button release (short press) to cycle debug options
             if (debouncer.rose()) {
                 debugMenuSelection = (debugMenuSelection + 1) % debugMenuOptionCount;
+                updateScrollOffset(debugMenuSelection, debugMenuScrollOffset, debugMenuOptionCount, MAX_MENU_ITEMS);
             }
             break;
         case State::HOLD_ACTION:
@@ -359,6 +389,7 @@ void loop() {
 
                 // Define which states allow for an "EXIT" action.
                 bool isExitClearValid = (previousState == State::AUTO_MODE ||
+                                         previousState == State::DIRECT_AUTO_MODE ||
                                          previousState == State::AUTO_UE4_APERTURE ||
                                          previousState == State::DIRECT_UE4_APERTURE ||
                                          previousState == State::RUNS_COMPLETE);
@@ -375,12 +406,14 @@ void loop() {
                 else if (heldDuration > BUTTON_DEBUG_DURATION_MS) {
                     // This action is global and always transitions to the debug menu selector.
                     debugMenuSelection = 0; // Reset menu choice
+                    debugMenuScrollOffset = 0; // Reset scroll
                     currentState = State::SELECT_DEBUG_MENU;
                 }
                 // Action 3: BYPASS (from mouse debug screen)
                 else if (isBypassValid && heldDuration > BUTTON_HOLD_DURATION_MS) {
                     digitalWrite(PIN_LED_BUILTIN, LOW); // Turn off the debug LED
                     menuSelection = 0; // Reset menu choice
+                    menuScrollOffset = 0; // Reset scroll
                     currentState = State::SELECT_MENU; // Proceed to the main menu
                 }
                 // Action 4: EXIT (from an active/completed run)
@@ -389,6 +422,8 @@ void loop() {
                     State modeToClear = (previousState == State::RUNS_COMPLETE) ? selectedMode : previousState;
                     if (modeToClear == State::AUTO_MODE) {
                         statsAuto = LatencyStats();
+                    } else if (modeToClear == State::DIRECT_AUTO_MODE) {
+                        statsDirectAuto = LatencyStats();
                     } else if (modeToClear == State::AUTO_UE4_APERTURE) {
                         statsBtoW = LatencyStats(); statsWtoB = LatencyStats(); isFirstUe4Run = true;
                     } else if (modeToClear == State::DIRECT_UE4_APERTURE) {
@@ -396,6 +431,7 @@ void loop() {
                     }
                     // Return to the main menu.
                     menuSelection = 0;
+                    menuScrollOffset = 0; // Reset scroll
                     currentState = State::SELECT_MENU;
                 }
                 // Action 5: SELECT (only if contextually valid)
@@ -405,27 +441,30 @@ void loop() {
                         // User selected a mode from the main menu.
                         // Store their choice and transition to the run limit menu.
                         if (menuSelection == 0) selectedMode = State::AUTO_MODE;
-                        else if (menuSelection == 1) selectedMode = State::AUTO_UE4_APERTURE;
+                        else if (menuSelection == 1) selectedMode = State::DIRECT_AUTO_MODE;
+                        else if (menuSelection == 2) selectedMode = State::AUTO_UE4_APERTURE;
                         else selectedMode = State::DIRECT_UE4_APERTURE;
 
                         runLimitMenuSelection = 0; // Reset sub-menu choice for a clean start
+                        runLimitMenuScrollOffset = 0; // Reset scroll
                         currentState = State::SELECT_RUN_LIMIT;
                     }
                     else if (previousState == State::SELECT_RUN_LIMIT) {
                         // User selected a run limit. Set it and prepare to start the mode.
-                        if (runLimitMenuSelection == 0) maxRuns = RUN_LIMIT_OPTION_1;
-                        else if (runLimitMenuSelection == 1) maxRuns = RUN_LIMIT_OPTION_2;
-                        else if (runLimitMenuSelection == 2) maxRuns = RUN_LIMIT_OPTION_3;
-                        else maxRuns = 0; // 0 represents unlimited
+                        const int numNumericOptions = sizeof(RUN_LIMIT_OPTIONS) / sizeof(RUN_LIMIT_OPTIONS[0]);
+                        if (runLimitMenuSelection < numNumericOptions) {
+                            maxRuns = RUN_LIMIT_OPTIONS[runLimitMenuSelection];
+                        } else maxRuns = 0;
 
                         bool shouldStartMode = true; // Assume we will start unless a check fails.
 
                         // --- Check for modes requiring a PC connection ---
-                        if (selectedMode == State::DIRECT_UE4_APERTURE || selectedMode == State::DEBUG_POLLING_TEST) {
+                        if (selectedMode == State::DIRECT_AUTO_MODE || selectedMode == State::DIRECT_UE4_APERTURE || selectedMode == State::DEBUG_POLLING_TEST) {
                             if (usb_configuration == 0) {
                                 shouldStartMode = false; // Veto the mode start.
                                 displayErrorScreen("CONNECTION ERROR", "This mode requires", "a PC connection.", "Returning to menu...");
                                 menuSelection = 0; // Reset menu for a clean slate
+                                menuScrollOffset = 0; // Reset scroll
                                 currentState = State::SELECT_MENU; // Go back to the main menu
                             }
                         }
@@ -435,6 +474,7 @@ void loop() {
                             shouldStartMode = false; // Veto the mode start.
                             displayErrorScreen("CONNECTION ERROR", "Auto modes require", "a mouse connection.", "Returning to menu...");
                             menuSelection = 0; // Reset menu for a clean slate
+                            menuScrollOffset = 0; // Reset scroll
                             currentState = State::SELECT_MENU; // Go back to the main menu
                         }
 
@@ -444,6 +484,9 @@ void loop() {
                             if (selectedMode == State::AUTO_MODE) {
                                 statsAuto = LatencyStats();
                                 if (ENABLE_SD_LOGGING) latenciesAuto.clear();
+                            } else if (selectedMode == State::DIRECT_AUTO_MODE) {
+                                statsDirectAuto = LatencyStats();
+                                if (ENABLE_SD_LOGGING) latenciesDirectAuto.clear();
                             } else if (selectedMode == State::AUTO_UE4_APERTURE) {
                                 ue4_isWaitingForWhite = true; // Reset sub-state
                                 isFirstUe4Run = true;
@@ -504,77 +547,48 @@ void loop() {
             if (maxRuns == 0 && statsAuto.runCount > 0 && (statsAuto.runCount % UNLIMITED_MODE_SAVE_INTERVAL == 0)) {
                 saveDataToSD(currentState, 0, true);
             }
+            
+            unsigned long latencyResult;
+            AutoMeasureResult result = performAutoModeMeasurement(false, latencyResult); // false for standard auto
 
-            bool timeoutOccurred = false;
+            if (result == AutoMeasureResult::SUCCESS) {
+                updateStats(statsAuto, latenciesAuto, latencyResult);
+            } else if (result == AutoMeasureResult::ABORT) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+                break;
+            }
+            // On TIMEOUT, we just loop and try again.
 
-            // --- SYNC STEP ---
-            // We now wait until the screen has been continuously dark for 4ms.
-            elapsedMicros overallSyncTimer; // Overall timeout for the entire sync process.
-            elapsedMicros darkStableTimer;  // Timer to measure continuous dark duration.
-            bool isCountingDark = false;    // Flag to know if we've started timing a dark period.
-
-            while (true) { // Loop until we confirm 4ms of darkness or timeout.
-                if (overallSyncTimer > MEASUREMENT_TIMEOUT_MICROS) {
-                    timeoutOccurred = true;
-                    break;
-                }
-
-                if (fastAnalogRead(PIN_LIGHT_SENSOR) <= DARK_SENSOR_THRESHOLD) {
-                    // Screen is dark.
-                    if (!isCountingDark) {
-                        // This is the first dark reading in a sequence, start the timer.
-                        isCountingDark = true;
-                        darkStableTimer = 0;
-                    }
-
-                    // Check if we have been dark for long enough.
-                    if (darkStableTimer > 4000) { // 4000 microseconds = 4 milliseconds.
-                        break; // Sync successful.
-                    }
-                } else {
-                    // Screen is not dark, reset the continuous dark timer.
-                    isCountingDark = false;
-                }
-
-                // A very short delay to prevent busy-looping at max CPU speed.
-                delayMicroseconds(50);
+            if (delayWithJitterAndAbortCheck(AUTO_MODE_RUN_DELAY_MS)) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+            }
+            break;
+        }
+        case State::DIRECT_AUTO_MODE: {
+            // Check if run limit has been reached BEFORE performing the next measurement.
+            if (maxRuns > 0 && statsDirectAuto.runCount >= maxRuns) {
+                currentState = State::RUNS_COMPLETE;
+                break;
             }
 
-            if (timeoutOccurred) {
-                // If timeout occurred during sync, skip this run and try again.
-                if (delayWithJitterAndAbortCheck(AUTO_MODE_RUN_DELAY_MS)) {
-                    previousState = currentState;
-                    currentState = State::HOLD_ACTION;
-                }
-                break; // Skip this run and try again.
+            // Check for periodic save in unlimited mode
+            if (maxRuns == 0 && statsDirectAuto.runCount > 0 && (statsDirectAuto.runCount % UNLIMITED_MODE_SAVE_INTERVAL == 0)) {
+                saveDataToSD(currentState, 0, true);
             }
+            
+            unsigned long latencyResult;
+            AutoMeasureResult result = performAutoModeMeasurement(true, latencyResult); // true for direct auto
 
-            // --- MEASUREMENT STEP ---
-            // 1. The latency timer starts THE INSTANT the click signal is sent.
-            //    This simulates the mouse button being pressed down, which causes
-            //    the RTSS FCAT marker to turn white.
-            elapsedMicros latencyTimer;
-            digitalWriteFast(PIN_SEND_CLICK, HIGH);
-
-            // 2. Now, wait for the light sensor to detect the screen turning white.
-            //    The click signal remains HIGH (mouse button held down) during this period.
-            while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
-                // If the screen doesn't turn white within a reasonable time, it's a measurement timeout.
-                if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) {
-                    timeoutOccurred = true;
-                    break;
-                }
+            if (result == AutoMeasureResult::SUCCESS) {
+                updateStats(statsDirectAuto, latenciesDirectAuto, latencyResult);
+            } else if (result == AutoMeasureResult::ABORT) {
+                previousState = currentState;
+                currentState = State::HOLD_ACTION;
+                break;
             }
-
-            // 3. After detecting white (or timeout), release the click signal.
-            //    This simulates the mouse button release, which should turn the FCAT box black again.
-            digitalWriteFast(PIN_SEND_CLICK, LOW);
-
-            // Only update stats if the measurement was successful (no timeout).
-            if (!timeoutOccurred) {
-                unsigned long latencyMicros = latencyTimer;
-                updateStats(statsAuto, latenciesAuto, latencyMicros);
-            }
+            // On TIMEOUT, we just loop and try again.
 
             if (delayWithJitterAndAbortCheck(AUTO_MODE_RUN_DELAY_MS)) {
                 previousState = currentState;
@@ -773,6 +787,8 @@ void loop() {
         case State::DEBUG_POLLING_TEST: {
             // Check for the exit condition: a button click.
             if (debouncer.rose()) {
+                debugMenuSelection = 0; // For consistency, reset menu position
+                debugMenuScrollOffset = 0;
                 currentState = State::SELECT_DEBUG_MENU;
                 break;
             }
@@ -853,10 +869,60 @@ void drawSyncScreen(const char* message, int y) {
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    centerText("SYNCHRONIZING", 0);
+    alignText("SYNCHRONIZING", 0);
     display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
-    centerText(message, y);
+    alignText(message, y);
     display.display();
+}
+
+// Measurement logic for both standard and direct auto modes
+AutoMeasureResult performAutoModeMeasurement(bool isDirectMode, unsigned long& outLatencyMicros) {
+    // --- SYNC STEP ---
+    // We wait until the screen has been continuously dark.
+    elapsedMicros overallSyncTimer;
+    while (fastAnalogRead(PIN_LIGHT_SENSOR) > DARK_SENSOR_THRESHOLD) {
+        if (overallSyncTimer > MEASUREMENT_TIMEOUT_MICROS) {
+            return AutoMeasureResult::TIMEOUT;
+        }
+        debouncer.update();
+        if (debouncer.read() == LOW && debouncer.currentDuration() > BUTTON_HOLD_START_MS) {
+            return AutoMeasureResult::ABORT;
+        }
+        delayMicroseconds(50);
+    }
+    
+    // --- MEASUREMENT STEP ---
+    bool timeoutOccurred = false;
+    elapsedMicros latencyTimer;
+    
+    // 1. Send the click signal (either via pin or USB) and start the timer.
+    if (isDirectMode) {
+        Mouse.press(MOUSE_LEFT);
+    } else {
+        digitalWriteFast(PIN_SEND_CLICK, HIGH);
+    }
+
+    // 2. Wait for the light sensor to detect the screen turning white.
+    while (fastAnalogRead(PIN_LIGHT_SENSOR) < LIGHT_SENSOR_THRESHOLD) {
+        if (latencyTimer > MEASUREMENT_TIMEOUT_MICROS) {
+            timeoutOccurred = true;
+            break;
+        }
+    }
+    
+    // 3. After detecting white (or timeout), release the click signal.
+    if (isDirectMode) {
+        Mouse.release(MOUSE_LEFT);
+    } else {
+        digitalWriteFast(PIN_SEND_CLICK, LOW);
+    }
+    
+    if (timeoutOccurred) {
+        return AutoMeasureResult::TIMEOUT;
+    } else {
+        outLatencyMicros = latencyTimer;
+        return AutoMeasureResult::SUCCESS;
+    }
 }
 
 // Performs an intelligent synchronization routine for UE4 modes.
@@ -887,7 +953,7 @@ SyncResult performSmartSync(bool isDirectMode) {
     if (initialState >= LIGHT_SENSOR_THRESHOLD) {
         // The screen is WHITE. Send one more click to toggle it to BLACK.
         drawSyncScreen("State is WHITE.", 24);
-        centerText("Sending toggle click...", 40);
+        alignText("Sending toggle click...", 40);
         display.display();
         if (delayWithJitterAndAbortCheck(500)) return SyncResult::HOLD_ABORT;
 
@@ -906,7 +972,7 @@ SyncResult performSmartSync(bool isDirectMode) {
     } else {
         // The state is indeterminate (e.g., grey screen, mid-transition).
         drawSyncScreen("Indeterminate state!", 24);
-        centerText("Sync failed. Retrying...", 40);
+        alignText("Sync failed. Retrying...", 40);
         display.display();
         if (delayWithJitterAndAbortCheck(2000)) return SyncResult::HOLD_ABORT;
         return SyncResult::FAILED;
@@ -928,7 +994,7 @@ SyncResult performSmartSync(bool isDirectMode) {
 
     // If we get here, the verification timed out.
     drawSyncScreen("Sync FAILED!", 24);
-    centerText("Screen not DARK. Retrying...", 40);
+    alignText("Screen not DARK. Retrying...", 40);
     display.display();
     if (delayWithJitterAndAbortCheck(2000)) return SyncResult::HOLD_ABORT;
     return SyncResult::FAILED;
@@ -939,6 +1005,7 @@ SyncResult performSmartSync(bool isDirectMode) {
 // Helper to get a string representation of the current mode for filenames
 String getModeString(State mode) {
     if (mode == State::AUTO_MODE) return "AUTO";
+    if (mode == State::DIRECT_AUTO_MODE) return "DIRECT_AUTO";
     if (mode == State::AUTO_UE4_APERTURE) return "AUTO_UE4";
     if (mode == State::DIRECT_UE4_APERTURE) return "DIRECT_UE4";
     return "UNKNOWN";
@@ -1008,19 +1075,22 @@ void saveDataToSD(State mode, unsigned long run_limit, bool is_partial_save) {
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    centerText("SAVING LOG...", 16);
+    alignText("SAVING LOG...", 16);
     // Display a truncated version of the path if it's too long
     String displayPath = filePath;
     if (displayPath.length() > 21) {
         displayPath = "..." + displayPath.substring(displayPath.length() - 18);
     }
-    centerText(displayPath.c_str(), 32);
+    alignText(displayPath.c_str(), 32);
     display.display();
 
     // Write the actual file
     if (mode == State::AUTO_MODE) {
         writeLogFile(filePath, latenciesAuto);
         if (is_partial_save) latenciesAuto.clear();
+    } else if (mode == State::DIRECT_AUTO_MODE) {
+        writeLogFile(filePath, latenciesDirectAuto);
+        if (is_partial_save) latenciesDirectAuto.clear();
     } else if (mode == State::AUTO_UE4_APERTURE) {
         writeLogFile(filePath, latenciesBtoW, latenciesWtoB);
         if (is_partial_save) { latenciesBtoW.clear(); latenciesWtoB.clear(); }
@@ -1057,8 +1127,8 @@ void updateStats(LatencyStats& stats, std::vector<float>& latencies, unsigned lo
     if (latencyMillis > stats.maxLatency) stats.maxLatency = latencyMillis;
 }
 
-// --- Helper function to center text on the display ---
-void centerText(const char* text, int y) {
+// --- Helper function to align text on the display ---
+void alignText(const char* text, int y, TextAlign align) {
     int targetY;
 
     // Check if a Y coordinate was provided. If not, use the current one.
@@ -1071,10 +1141,44 @@ void centerText(const char* text, int y) {
     int16_t x1, y1;
     uint16_t w, h;
     display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
-    int x = (SCREEN_WIDTH - w) / 2;
+
+    int x = 0;
+    switch(align) {
+        case TextAlign::LEFT:
+            x = 0;
+            break;
+        case TextAlign::CENTER:
+            x = (SCREEN_WIDTH - w) / 2;
+            break;
+        case TextAlign::RIGHT:
+            x = SCREEN_WIDTH - w - 4;
+            break;
+    }
+
     display.setCursor(max(0, x), targetY); // Use max(0, x) to prevent negative coordinates
     display.println(text);
 }
+
+// --- Helper function to manage menu scrolling ---
+void updateScrollOffset(int selection, int& scrollOffset, int optionCount, int maxVisibleItems) {
+    // If selection moves above the visible window, adjust the window up.
+    if (selection < scrollOffset) {
+        scrollOffset = selection;
+    }
+    // If selection moves below the visible window, adjust the window down.
+    else if (selection >= scrollOffset + maxVisibleItems) {
+        scrollOffset = selection - maxVisibleItems + 1;
+    }
+
+    // This logic is mostly for safety, ensuring scrollOffset doesn't go out of bounds
+    // if the option count is smaller than the displayable item count.
+    if (optionCount <= maxVisibleItems) {
+        scrollOffset = 0;
+    } else if (scrollOffset > optionCount - maxVisibleItems) {
+        scrollOffset = optionCount - maxVisibleItems;
+    }
+}
+
 
 // --- Display Functions ---
 
@@ -1083,11 +1187,11 @@ void displayErrorScreen(const char* title, const char* line1, const char* line2,
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    centerText(title, 0);
+    alignText(title, 0);
     display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
-    if (line1) centerText(line1, 20);
-    if (line2) centerText(line2, 32);
-    if (line3) centerText(line3, 48);
+    if (line1) alignText(line1, 20);
+    if (line2) alignText(line2, 32);
+    if (line3) alignText(line3, 48);
     display.display();
     delay(delayMs);
 }
@@ -1114,6 +1218,7 @@ void updateDisplay() {
             drawHoldActionScreen();
             break;
         case State::AUTO_MODE:
+        case State::DIRECT_AUTO_MODE:
         case State::AUTO_UE4_APERTURE:
         case State::DIRECT_UE4_APERTURE:
         case State::RUNS_COMPLETE:
@@ -1153,7 +1258,7 @@ void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk, bool sdOk) {
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    centerText("SYSTEM CHECK", 0);
+    alignText("SYSTEM CHECK", 0);
     display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
     const int col1_x = 5;
@@ -1188,10 +1293,10 @@ void drawSetupScreen(bool monitorOk, bool sensorOk, bool mouseOk, bool sdOk) {
     
     // if (monitorOk && sensorOk && mouseOk) { Removed cus redundant.
     display.drawLine(0, 35, SCREEN_WIDTH - 1, 35, SSD1306_WHITE);
-    centerText("Hold Button to Start", 42);
+    alignText("Hold Button to Start", 42);
 
     // Footer
-    centerText(GITHUB_TAG, 56);
+    alignText(GITHUB_TAG, 56);
     display.display();
 }
 
@@ -1200,7 +1305,7 @@ void drawHoldActionScreen() {
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
-    centerText("Hold for actions", 0);
+    alignText("Hold for actions", 0);
     display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
     unsigned long holdTime = debouncer.currentDuration();
@@ -1212,7 +1317,7 @@ void drawHoldActionScreen() {
     // --- SELECT / EXIT / BYPASS Bar ---
     display.setCursor(0, 18);
     bool isSelectValid = (previousState == State::SELECT_MENU || previousState == State::SELECT_RUN_LIMIT || previousState == State::SELECT_DEBUG_MENU || currentState == State::SETUP);
-    bool isExitClearValid = (previousState == State::AUTO_MODE || previousState == State::AUTO_UE4_APERTURE || previousState == State::DIRECT_UE4_APERTURE || previousState == State::RUNS_COMPLETE);
+    bool isExitClearValid = (previousState == State::AUTO_MODE || previousState == State::DIRECT_AUTO_MODE || previousState == State::AUTO_UE4_APERTURE || previousState == State::DIRECT_UE4_APERTURE || previousState == State::RUNS_COMPLETE);
     bool isBypassValid = (previousState == State::DEBUG_MOUSE);
 
     if (isBypassValid) {
@@ -1254,7 +1359,7 @@ void drawMouseDebugScreen() {
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
 
-    centerText("MOUSE DEBUG", 0);
+    alignText("MOUSE DEBUG", 0);
     display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
     // Live Data
@@ -1280,7 +1385,7 @@ void drawMouseDebugScreen() {
     display.print(MOUSE_STABILITY_THRESHOLD_ADC);
 
     // Footer
-    centerText(GITHUB_TAG, 56);
+    alignText(GITHUB_TAG, 56);
 }
 
 void drawLightSensorDebugScreen() {
@@ -1288,7 +1393,7 @@ void drawLightSensorDebugScreen() {
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
 
-    centerText("LSENSOR DEBUG", 0);
+    alignText("LSENSOR DEBUG", 0);
     display.drawLine(0, 8, SCREEN_WIDTH-1, 8, SSD1306_WHITE);
 
     // Live Data
@@ -1306,56 +1411,110 @@ void drawLightSensorDebugScreen() {
     display.print(SENSOR_FLUCTUATION_THRESHOLD);
 
     // Footer
-    centerText(GITHUB_TAG, 56);
+    alignText(GITHUB_TAG, 56);
 }
 
 void drawPollingTestScreen() {
-    centerText("POLLING TEST", 0);
+    alignText("POLLING TEST", 0);
     display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
-    centerText("Mouse moving...", 20);
-    centerText("Use HamsterWheel", 32);
-    centerText("Click button to exit.", 44);
+    alignText("Mouse moving...", 20);
+    alignText("Use HamsterWheel", 32);
+    alignText("Click button to exit.", 44);
 
-    centerText(GITHUB_TAG, 56);
+    alignText(GITHUB_TAG, 56);
 }
 
 // --- Generic menu drawing function to reduce code duplication ---
-void drawGenericMenu(const char* title, const char* const options[], int optionCount, int selection, bool includeFooter = true) {
-    centerText(title, 0);
+void drawGenericMenu(const char* title, const char* const options[], int optionCount, int selection, int scrollOffset, int maxVisibleItems, bool includeFooter = true) {
+    alignText(title, 0);
     display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
-    for (int i = 0; i < optionCount; ++i) {
-        display.setCursor(10, 16 + i * 12);
-        if (i == selection) {
+    int displayCount = min(optionCount, maxVisibleItems);
+    const int menu_start_y = 16;
+    const int item_height = 12;
+
+    for (int i = 0; i < displayCount; ++i) {
+        int optionIndex = scrollOffset + i;
+        if (optionIndex >= optionCount) break;
+
+        display.setCursor(10, menu_start_y + i * item_height);
+        if (optionIndex == selection) {
             display.print("> ");
         } else {
             display.print("  ");
         }
-        display.println(options[i]);
+        display.println(options[optionIndex]);
+    }
+
+    // --- Scrollbar Logic ---
+    if (optionCount > maxVisibleItems) {
+        const int track_x = SCREEN_WIDTH - 2;   // The track is a 1px line at x=126
+        const int thumb_x = SCREEN_WIDTH - 4;   // The thumb is 4px wide, centered over the track
+        const int thumb_width = 4;
+
+        const int menu_top_y = menu_start_y - 2; // Y-coordinate where the scrollable area starts
+        const int menu_height = (maxVisibleItems * item_height);
+
+        // Draw the scrollbar track as a 1-pixel wide filled rectangle.
+        // This is a compatible way to draw a vertical line that avoids using drawVLine.
+        display.fillRect(track_x, menu_top_y, 1, menu_height, SSD1306_WHITE);
+
+        // The thumb's height is proportional to the ratio of visible items to total items.
+        int thumb_height = round((float)maxVisibleItems / optionCount * menu_height);
+        thumb_height = max(3, thumb_height); // Ensure thumb is at least 3 pixels high for visibility.
+
+        // The thumb's position is proportional to the scroll offset.
+        float scroll_percent = 0;
+        // Avoid division by zero if optionCount <= maxVisibleItems
+        if (optionCount > maxVisibleItems) {
+            scroll_percent = (float)scrollOffset / (optionCount - maxVisibleItems);
+        }
+        
+        int thumb_y_offset = round(scroll_percent * (menu_height - thumb_height));
+        int thumb_y = menu_top_y + thumb_y_offset;
+
+        // Draw the thumb (a thicker, filled rectangle).
+        display.fillRect(thumb_x, thumb_y, thumb_width, thumb_height, SSD1306_WHITE);
     }
 
     // Footer
-    if (includeFooter) centerText(GITHUB_TAG, 56);
+    if (includeFooter) {
+        display.drawLine(0, 54, SCREEN_WIDTH - 1, 54, SSD1306_WHITE);
+        alignText(GITHUB_TAG, 56);
+    }
 }
 
 void drawMenuScreen() {
-    const char* const menuOptions[] = {"Automatic", "Auto UE4", "Direct UE4"};
-    drawGenericMenu("Select Mode", menuOptions, menuOptionCount, menuSelection);
+    const char* const menuOptions[] = {"Automatic", "Direct Auto", "Auto UE4", "Direct UE4"};
+    drawGenericMenu("Select Mode", menuOptions, menuOptionCount, menuSelection, menuScrollOffset, MAX_MENU_ITEMS);
 }
 
 void drawRunLimitMenuScreen() {
-    char opt1[16], opt2[16], opt3[16];
-    sprintf(opt1, "%lu Runs", RUN_LIMIT_OPTION_1);
-    sprintf(opt2, "%lu Runs", RUN_LIMIT_OPTION_2);
-    sprintf(opt3, "%lu Runs", RUN_LIMIT_OPTION_3);
-    const char* const runLimitOptions[] = {opt1, opt2, opt3, "Unlimited"};
-    drawGenericMenu("Select Run Limit", runLimitOptions, runLimitMenuOptionCount, runLimitMenuSelection, false);
+    const int numNumericOptions = sizeof(RUN_LIMIT_OPTIONS) / sizeof(RUN_LIMIT_OPTIONS[0]);
+    const int totalOptions = numNumericOptions + 1;
+
+    // Create an array of char pointers for the menu text.
+    const char* runLimitOptions[totalOptions];
+    // Buffer to hold formatted strings like "100 Runs"
+    char optionBuffers[numNumericOptions][16]; // Max 16 chars per option string
+
+    // Populate numeric options from the config array
+    for (int i = 0; i < numNumericOptions; ++i) {
+        sprintf(optionBuffers[i], "%lu Runs", RUN_LIMIT_OPTIONS[i]);
+        runLimitOptions[i] = optionBuffers[i];
+    }
+
+    // Add "Unlimited" option at the end
+    runLimitOptions[numNumericOptions] = "Unlimited";
+
+    // Draw the menu using the generic function
+    drawGenericMenu("Select Run Limit", runLimitOptions, totalOptions, runLimitMenuSelection, runLimitMenuScrollOffset, MAX_RUN_LIMIT_MENU_ITEMS, false);
 }
 
 void drawDebugMenuScreen() {
     const char* const debugOptions[] = {"Mouse Debug", "LSensor Debug", "Polling Test"};
-    drawGenericMenu("Debug Menu", debugOptions, debugMenuOptionCount, debugMenuSelection);
+    drawGenericMenu("Debug Menu", debugOptions, debugMenuOptionCount, debugMenuSelection, debugMenuScrollOffset, MAX_MENU_ITEMS);
 }
 
 // --- Main Operation Screen Router ---
@@ -1365,7 +1524,9 @@ void drawOperationScreen() {
     State modeToDisplay = (currentState == State::RUNS_COMPLETE) ? selectedMode : currentState;
 
     if (modeToDisplay == State::AUTO_MODE) {
-        drawAutoModeStats();
+        drawAutoModeStatsScreen("AUTO", statsAuto);
+    } else if (modeToDisplay == State::DIRECT_AUTO_MODE) {
+        drawAutoModeStatsScreen("DIRECT AUTO", statsDirectAuto);
     } else if (modeToDisplay == State::AUTO_UE4_APERTURE) {
         drawUe4StatsScreen("Auto UE4 Aperture", statsBtoW, statsWtoB);
     } else if (modeToDisplay == State::DIRECT_UE4_APERTURE) {
@@ -1374,25 +1535,24 @@ void drawOperationScreen() {
 }
 
 // --- Specific Stat Screens ---
-void drawAutoModeStats() {
+void drawAutoModeStatsScreen(const char* title, const LatencyStats& stats) {
     char buf[16];
 
     // Mode Title (Top-Right)
-    display.setCursor(88, 0); // Adjusted for "AUTO" width
-    display.print("AUTO");
+    alignText(title, 0, TextAlign::RIGHT);
 
     // Horizontal divider line
     display.drawLine(0, 8, SCREEN_WIDTH - 1, 8, SSD1306_WHITE);
 
     // Last Latency
-    dtostrf(statsAuto.lastLatency, 7, 4, buf);
+    dtostrf(stats.lastLatency, 7, 4, buf);
     display.setCursor(0, 15);
     display.print("Last: ");
     display.print(buf);
     display.print("ms");
 
     // Average Latency
-    dtostrf(statsAuto.avgLatency, 7, 4, buf);
+    dtostrf(stats.avgLatency, 7, 4, buf);
     display.setCursor(0, 28);
     display.print("Avg:  ");
     display.print(buf);
@@ -1400,31 +1560,27 @@ void drawAutoModeStats() {
 
     // Min/Max
     display.setTextSize(1);
-    dtostrf(statsAuto.minLatency, 6, 3, buf);
+    dtostrf(stats.minLatency, 6, 3, buf);
     display.setCursor(0, 41);
     display.print("Min:");
     display.print(buf);
 
-    dtostrf(statsAuto.maxLatency, 6, 3, buf);
+    dtostrf(stats.maxLatency, 6, 3, buf);
     display.setCursor(64, 41);
     display.print("Max:");
     display.print(buf);
 
     // --- Footer ---
-    // Watermark (Bottom-Left)
-    display.setCursor(0, 56);
-    display.print("S4N-T0S");
+    alignText("S4N-T0S", 56, TextAlign::LEFT);
 
     // Run count (Bottom-Right)
     char runBuf[20];
     if (currentState == State::RUNS_COMPLETE) {
-        sprintf(runBuf, "DONE | %lu", statsAuto.runCount);
+        sprintf(runBuf, "DONE | %lu", stats.runCount);
     } else {
-        sprintf(runBuf, "Runs: %lu", statsAuto.runCount);
+        sprintf(runBuf, "Runs: %lu", stats.runCount);
     }
-    int runWidth = strlen(runBuf) * 6;
-    display.setCursor(max(0, SCREEN_WIDTH - runWidth - 6), 56);
-    display.print(runBuf);
+    alignText(runBuf, 56, TextAlign::RIGHT);
 }
 
 // Refactored function to display stats for any UE4-style mode to reduce code duplication
@@ -1432,7 +1588,7 @@ void drawUe4StatsScreen(const char* title, const LatencyStats& b_to_w_stats, con
     char buf[16];
 
     // --- Title ---
-    centerText(title, 0);
+    alignText(title, 0);
 
     // --- Column Headers ---
     display.setCursor(0, 12);
@@ -1477,9 +1633,7 @@ void drawUe4StatsScreen(const char* title, const LatencyStats& b_to_w_stats, con
     display.print("M:"); display.print(buf);
 
     // --- Footer ---
-    // Watermark (Bottom-Left)
-    display.setCursor(0, 56);
-    display.print("S4N-T0S");
+    alignText("S4N-T0S", 56, TextAlign::LEFT);
 
     // Run count (Bottom-Right)
     char runBuf[20];
@@ -1489,9 +1643,7 @@ void drawUe4StatsScreen(const char* title, const LatencyStats& b_to_w_stats, con
         // or w_to_b_stats.runCount, they should be the same
          sprintf(runBuf, "Runs: %lu", b_to_w_stats.runCount);
     }
-    int runWidth = strlen(runBuf) * 6;
-    display.setCursor(max(0, SCREEN_WIDTH - runWidth - 6), 56);
-    display.print(runBuf);
+    alignText(runBuf, 56, TextAlign::RIGHT);
 }
 
 

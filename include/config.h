@@ -82,10 +82,8 @@ const unsigned long UE4_MODE_RUN_DELAY_MS = 250;
 const int MODE_DELAY_JITTER_MS = 10;
 
 // --- Run Limit Configuration ---
-// These values populate the "Select Run Limit" menu.
-const unsigned long RUN_LIMIT_OPTION_1 = 100;
-const unsigned long RUN_LIMIT_OPTION_2 = 300;
-const unsigned long RUN_LIMIT_OPTION_3 = 500;
+// This array defines the options in the "Select Run Limit" menu.
+const unsigned long RUN_LIMIT_OPTIONS[] = {10, 100, 300, 500};
 
 // --- SD Card Logging ---
 // Saves latency results on run completion. SD card must be FAT32 formatted.
