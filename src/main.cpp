@@ -34,6 +34,12 @@ Bounce debouncer = Bounce();
 elapsedMillis ledTimer; // For blinking LED in debug modes
 ADC *adc = new ADC(); // ADC object for optimized analog reads
 
+// Force the compiler to paste the code directly into the loops below eliminating function call overhead.
+static inline int fastAnalogRead(uint8_t pin) __attribute__((always_inline));
+static inline int fastAnalogRead(uint8_t pin) {
+    return adc->analogRead(pin);
+}
+
 // --- State Machine ---
 enum class State {
     SETUP,
@@ -148,10 +154,9 @@ void drawLightSensorDebugScreen();
 void drawPollingTestScreen();
 void enterErrorState(const char* errorMessage);
 void updateStats(LatencyStats& stats, std::vector<float>& latencies, unsigned long latencyMicros);
-int fastAnalogRead(uint8_t pin);
 void drawSyncScreen(const char* message, int y = 32);
 SyncResult performSmartSync(bool isDirectMode);
-AutoMeasureResult performAutoModeMeasurement(bool isDirectMode, unsigned long& outLatencyMicros);
+FASTRUN AutoMeasureResult performAutoModeMeasurement(bool isDirectMode, unsigned long& outLatencyMicros);
 void alignText(const char* text, int y = -1, TextAlign align = TextAlign::CENTER);
 bool delayWithJitterAndAbortCheck(unsigned long baseDelayMs);
 bool performMouseCheck();
@@ -209,6 +214,9 @@ void setup() {
         enterErrorState("Monitor Fail");
         return; // Halt setup
     }
+
+    // Reduces display update blocking time from ~100ms to ~10ms
+    Wire.setClock(1000000); 
     display.clearDisplay();
     display.display();
 
@@ -480,25 +488,41 @@ void loop() {
 
                         if (shouldStartMode) {
                             dataHasBeenSaved = false; // Reset save flag for the new run
-                            // Reset stats and data vectors for the selected mode before starting
+                            
+                            // We reserve memory now so the CPU doesn't have to allocate 
+                            // memory dynamically during the measurement loop.
+                            size_t reserveSize = (maxRuns > 0) ? maxRuns : UNLIMITED_MODE_SAVE_INTERVAL;
+
                             if (selectedMode == State::AUTO_MODE) {
                                 statsAuto = LatencyStats();
-                                if (ENABLE_SD_LOGGING) latenciesAuto.clear();
+                                if (ENABLE_SD_LOGGING) {
+                                    latenciesAuto.clear();
+                                    latenciesAuto.reserve(reserveSize);
+                                }
                             } else if (selectedMode == State::DIRECT_AUTO_MODE) {
                                 statsDirectAuto = LatencyStats();
-                                if (ENABLE_SD_LOGGING) latenciesDirectAuto.clear();
+                                if (ENABLE_SD_LOGGING) {
+                                    latenciesDirectAuto.clear();
+                                    latenciesDirectAuto.reserve(reserveSize);
+                                }
                             } else if (selectedMode == State::AUTO_UE4_APERTURE) {
                                 ue4_isWaitingForWhite = true; // Reset sub-state
                                 isFirstUe4Run = true;
-                                statsBtoW = LatencyStats();   // Clear stats
+                                statsBtoW = LatencyStats(); // Clear stats
                                 statsWtoB = LatencyStats();
-                                if (ENABLE_SD_LOGGING) { latenciesBtoW.clear(); latenciesWtoB.clear(); }
+                                if (ENABLE_SD_LOGGING) { 
+                                    latenciesBtoW.clear(); latenciesBtoW.reserve(reserveSize);
+                                    latenciesWtoB.clear(); latenciesWtoB.reserve(reserveSize);
+                                }
                             } else if (selectedMode == State::DIRECT_UE4_APERTURE) {
-                                 ue4_isWaitingForWhite = true; // Reset sub-state
+                                ue4_isWaitingForWhite = true; // Reset sub-state
                                 isFirstUe4Run = true;
                                 statsDirectBtoW = LatencyStats(); // Clear stats
                                 statsDirectWtoB = LatencyStats();
-                                if (ENABLE_SD_LOGGING) { latenciesDirectBtoW.clear(); latenciesDirectWtoB.clear(); }
+                                if (ENABLE_SD_LOGGING) { 
+                                    latenciesDirectBtoW.clear(); latenciesDirectBtoW.reserve(reserveSize);
+                                    latenciesDirectWtoB.clear(); latenciesDirectWtoB.reserve(reserveSize);
+                                }
                             }
                             currentState = selectedMode; // Finally, start the analysis mode
                         }
@@ -876,7 +900,7 @@ void drawSyncScreen(const char* message, int y) {
 }
 
 // Measurement logic for both standard and direct auto modes
-AutoMeasureResult performAutoModeMeasurement(bool isDirectMode, unsigned long& outLatencyMicros) {
+FASTRUN AutoMeasureResult performAutoModeMeasurement(bool isDirectMode, unsigned long& outLatencyMicros) {
     // --- SYNC STEP ---
     // We wait until the screen has been continuously dark.
     elapsedMicros overallSyncTimer;
@@ -1002,8 +1026,8 @@ SyncResult performSmartSync(bool isDirectMode) {
 
 // --- SD Card Functions ---
 
-// Helper to get a string representation of the current mode for filenames
-String getModeString(State mode) {
+// Helper to get a string literal of the current mode for filenames
+const char* getModeString(State mode) {
     if (mode == State::AUTO_MODE) return "AUTO";
     if (mode == State::DIRECT_AUTO_MODE) return "DIRECT_AUTO";
     if (mode == State::AUTO_UE4_APERTURE) return "AUTO_UE4";
@@ -1011,13 +1035,16 @@ String getModeString(State mode) {
     return "UNKNOWN";
 }
 
-// Finds the next available file number for a given base name to prevent overwriting files.
-int getNextFileNumber(const String& path, const String& baseName) {
+// Finds the next available file number using C-strings to avoid heap fragmentation
+int getNextFileNumber(const char* baseName) {
     int fileNumber = 1;
+    char fileNameBuffer[64];
+
     while (true) {
-        // Using String objects for path manipulation is safer
-        String fileName = path + "/" + baseName + "_" + String(fileNumber) + ".csv";
-        if (!SD.exists(fileName.c_str())) { // FIX: Use .c_str() for SD library functions
+        // Efficiently format string: /Directory/BaseName_Number.csv
+        snprintf(fileNameBuffer, sizeof(fileNameBuffer), "%s/%s_%d.csv", SD_LOG_DIRECTORY, baseName, fileNumber);
+        
+        if (!SD.exists(fileNameBuffer)) {
             return fileNumber;
         }
         fileNumber++;
@@ -1026,8 +1053,8 @@ int getNextFileNumber(const String& path, const String& baseName) {
 }
 
 // Writes the collected latency data to a specified file.
-void writeLogFile(const String& filePath, const std::vector<float>& latencies1, const std::vector<float>& latencies2 = {}) {
-    File dataFile = SD.open(filePath.c_str(), FILE_WRITE); // FIX: Use .c_str() for SD library functions
+void writeLogFile(const char* filePath, const std::vector<float>& latencies1, const std::vector<float>& latencies2 = {}) {
+    File dataFile = SD.open(filePath, FILE_WRITE);
     if (dataFile) {
         if (latencies2.empty()) { // Single column log for AUTO mode
             dataFile.println("Latency (ms)");
@@ -1056,57 +1083,51 @@ void writeLogFile(const String& filePath, const std::vector<float>& latencies1, 
 void saveDataToSD(State mode, unsigned long run_limit, bool is_partial_save) {
     if (!sdCardPresent || !ENABLE_SD_LOGGING) return;
 
-    String modeStr = getModeString(mode);
-    String baseFileName;
+    const char* modeStr = getModeString(mode);
+    char baseFileName[40];
+    
+    // Construct base filename efficiently
     if (run_limit > 0) {
-        baseFileName = modeStr + "_" + String(run_limit) + "runs";
+        snprintf(baseFileName, sizeof(baseFileName), "%s_%luruns", modeStr, run_limit);
     } else {
-        baseFileName = modeStr + "_UNLIMITED_part";
+        snprintf(baseFileName, sizeof(baseFileName), "%s_UNLIM_part", modeStr);
     }
 
-    int fileNum = getNextFileNumber(SD_LOG_DIRECTORY, baseFileName);
+    int fileNum = getNextFileNumber(baseFileName);
     if (fileNum == -1) {
         displayErrorScreen("SD CARD ERROR", "Could not find", "a free file name.", "Aborting save...");
         return;
     }
-    String filePath = String(SD_LOG_DIRECTORY) + "/" + baseFileName + "_" + String(fileNum) + ".csv";
+
+    char finalPath[64];
+    snprintf(finalPath, sizeof(finalPath), "%s/%s_%d.csv", SD_LOG_DIRECTORY, baseFileName, fileNum);
 
     // Show "Saving..." message on screen
     display.clearDisplay();
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
     alignText("SAVING LOG...", 16);
-    // Display a truncated version of the path if it's too long
-    String displayPath = filePath;
-    if (displayPath.length() > 21) {
-        displayPath = "..." + displayPath.substring(displayPath.length() - 18);
-    }
-    alignText(displayPath.c_str(), 32);
+    
+    // Just print the filename part to keep it clean on the OLED
+    alignText(baseFileName, 32); 
     display.display();
 
     // Write the actual file
     if (mode == State::AUTO_MODE) {
-        writeLogFile(filePath, latenciesAuto);
+        writeLogFile(finalPath, latenciesAuto);
         if (is_partial_save) latenciesAuto.clear();
     } else if (mode == State::DIRECT_AUTO_MODE) {
-        writeLogFile(filePath, latenciesDirectAuto);
+        writeLogFile(finalPath, latenciesDirectAuto);
         if (is_partial_save) latenciesDirectAuto.clear();
     } else if (mode == State::AUTO_UE4_APERTURE) {
-        writeLogFile(filePath, latenciesBtoW, latenciesWtoB);
+        writeLogFile(finalPath, latenciesBtoW, latenciesWtoB);
         if (is_partial_save) { latenciesBtoW.clear(); latenciesWtoB.clear(); }
     } else if (mode == State::DIRECT_UE4_APERTURE) {
-        writeLogFile(filePath, latenciesDirectBtoW, latenciesDirectWtoB);
+        writeLogFile(finalPath, latenciesDirectBtoW, latenciesDirectWtoB);
         if (is_partial_save) { latenciesDirectBtoW.clear(); latenciesDirectWtoB.clear(); }
     }
 
     delay(1000); // Let user see the save message before continuing
-}
-
-// --- Optimized Analog Read ---
-// Wrapper for the ADC library to perform a faster analog read using our pre-configured settings.
-// Marked 'FASTRUN' to be placed in ITCM for maximum speed, as it's called repeatedly inside measurement loops.
-FASTRUN int fastAnalogRead(uint8_t pin) {
-    return adc->analogRead(pin);
 }
 
 // --- Helper function to centralize statistics calculations ---
