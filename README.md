@@ -14,7 +14,7 @@ While the firmware behaves as a standard HID mouse, any unrecognized custom devi
 ## Key Features
 
 *   **High-Speed Measurement:** Uses the Teensy `ADC` library and `digitalWriteFast` for minimal I/O overhead and rapid sensor readings.
-*   **Multiple Testing Modes:** Includes a general-purpose automatic mode and specialized modes for use with controlled testing software.
+*   **Multiple Testing Modes:** Includes general-purpose automatic modes (wired and USB) and specialized modes for use with controlled testing software.
 *   **True 8kHz Polling:** A custom build script temporarily patches the Teensy core to enable a true 8000 Hz USB polling rate for maximum accuracy in Direct Mode.
 *   **On-Device Stats:** The OLED screen displays live latency data, including the last, average, minimum, and maximum measurements, plus a run counter.
 *   **SD Card Data Logging:** Automatically save every latency measurement from a test session to a `.csv` file on a microSD card.
@@ -31,9 +31,11 @@ This project requires soldering and basic electronics knowledge.
 *   **Light Sensor:** TEMT6000 Ambient Light Sensor
 *   **Display:** 128x64 I2C SSD1306 OLED Display
 *   **Input:** Momentary push button
-*   **Transistor:** BC547A NPN Transistor (or similar)
-*   **Resistor:** 220 Ohm Resistor
-*   **Host Mouse:** An old or spare mouse, wired into the left click switch.
+*   **Transistor:** BC547A NPN Transistor (or similar) *
+*   **Resistor:** 220 Ohm Resistor *
+*   **Host Mouse:** An old or spare mouse, wired into the left click switch. *
+
+*\* **Note:** The **Transistor**, **Resistor**, and **Host Mouse** are strictly required for the standard Automatic Modes where the Teensy triggers a physical mouse switch. If you choose not to wire a physical mouse, you can omit these components and use the device exclusively in **Direct Mode** (where the Teensy acts as a USB mouse). However, please note that while simpler, this method removes the internal hardware latency of your specific mouse from the results, meaning you will measure System + Display latency rather than the full "click-to-photon" pipeline.*
 
 ![Wiring Diagram](https://github.com/S4N-T0S/Open-Source-LDAT/blob/main/readme_media/Open-Source-LDAT_S4N-T0S_Wiring.jpg)
 
@@ -72,6 +74,15 @@ Before compiling, you **must** customize the `include/config.h` file. This is th
 1.  Open the project folder in Visual Studio Code with PlatformIO installed.
 2.  Connect your Teensy 4.1.
 3.  Click the **Upload** button (right-arrow icon) in the PlatformIO toolbar. PlatformIO will handle everything else.
+
+### Optional: Overclocking
+The firmware is configured to run at the Teensy 4.1's stock 600MHz by default, which is perfectly stable and provides high-precision measurements.
+
+However, the `platformio.ini` file includes commented-out options to overclock the CPU if you wish to do so at your own risk:
+*   **720MHz:** Usually stable on most chips without active cooling.
+*   **816MHz:** **Requires a heatsink.** Running at this frequency without adequate cooling can cause instability, thermal throttling, or hardware damage.
+
+To enable an overclock, simply uncomment the desired `board_build.f_cpu` line in `platformio.ini` before compiling.
 
 ---
 ## Test Environment Setup (Choosing a Latency Marker)
@@ -137,14 +148,20 @@ A general-purpose test that measures latency from the mouse switch to the screen
 *   **How it works:** The device sends a click signal via its output pin (triggering the attached mouse), starts a timer, and waits for the sensor to detect the screen changing from dark to light.
 *   **Use case:** This mode is highly versatile. It's excellent for getting a baseline system reading or comparing the hardware latency of different mice. While designed for standardized markers like the RTSS FCAT marker or NVIDIA's Reflex Flash, it can be adapted for other scenarios. By using the **LSensor Debug** tool, you can observe the sensor's raw output and adjust the `LIGHT_SENSOR_THRESHOLD` in the `config.h` file to trigger on other in-game visual events, such as a muzzle flash. This allows for latency measurement in many situations, though it may require careful tuning.
 
-### 2. Auto UE4 Aperture Mode
+### 2. Direct Automatic Mode
+
+The same as the Automatic Mode, but not requiring a physical mouse to be plugged in.
+*   **How it works:** Instead of triggering a physical switch, the Teensy acts as a high-speed USB mouse and sends the click signal directly.
+*   **Use case:** Perfect for users who do not want to solder. This measures the latency from "USB Packet Sent" to "Photon," effectively testing the System + Display latency (excluding the physical mouse click processing time).
+
+### 3. Auto UE4 Aperture Mode
 
 Designed specifically for the **Aperture Grille Latency Tester** software.
 *   **Website:** [Aperture Grille Software](https://www.aperturegrille.com/software/)
 *   **How it works:** Similar to Automatic Mode, but tailored for the black/white toggle in the Aperture Grille app. It runs a smart sync and warm-up routine to ensure measurements are synchronized and repeatable.
 *   **Use case:** This mode provides a highly stable and repeatable environment ideal for A/B testing the impact of system changes. Use it to accurately measure the effects of different graphics driver settings, OS optimizations, monitor configurations (overdrive, G-Sync/FreeSync), and to compare different physical mice.
 
-### 3. Direct UE4 Aperture Mode
+### 4. Direct UE4 Aperture Mode
 
 Measures the entire latency pipeline, from USB input to photon output, using the Aperture Grille software.
 *   **How it works:** The Teensy acts as a real 8kHz USB mouse and sends a standard click to the PC. The timer starts the instant the USB packet is sent. This mode relies on the 8kHz polling patch for its high accuracy.
