@@ -94,7 +94,7 @@ To measure latency, the device needs a reliable on-screen visual event (a "laten
 These tools provide a standardised, high-contrast square that changes colour on a click, offering the most reliable and repeatable measurements.
 
 *   **For NVIDIA Users: Reflex Flash Indicator**
-    The best method is to use the **NVIDIA Reflex Latency Flash Indicator**, supported by many competitive games. Enable it in the game's graphics settings. For games that don't offer a menu option, a `.bat` script to force the setting is included in the `/scripts` folder of this project, thanks to GitHub user [@fr33thyfr33thy](https://github.com/fr33thyfr33thy).
+    The best method is to use the **NVIDIA Reflex Latency Flash Indicator**, supported by many competitive games. Enable it in the game's graphics settings. For games that don't offer a menu option, a `.bat` script to force the setting is included in the `/tools` folder of this project, thanks to GitHub user [@fr33thyfr33thy](https://github.com/fr33thyfr33thy).
 
 *   **For AMD & All Other Users: RTSS Latency Marker**
     A "okay" alternative is the **RTSS FCAT Latency Marker**.
